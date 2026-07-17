@@ -43,4 +43,27 @@ jobs:
         run: |
           test "${CIB_VERDICT}" = "pass"
           test "${CIB_EXIT_CODE}" = "0"
-          test -f "${CIB_REPORT_PATH}"
+          test -f "${CIB_ACTION_OUTPUT_ROOT}/${CIB_REPORT_PATH}"
+          echo "${CIB_ACTION_OUTPUT_ROOT}" > "${RUNNER_TEMP}/cib-first-output-root"
+
+      - name: Run local CIB action again
+        id: cib_second
+        uses: ./
+        with:
+          config: tests/fixtures/action/cib.yaml
+          openai-api-key: "fixture-api-key"
+          artifact-name: cib-action-smoke-report-second
+          retention-days: "1"
+
+      - name: Assert repeated invocation is isolated
+        if: steps.cib_second.outputs.verdict == 'pass'
+        env:
+          CIB_VERDICT: ${{ steps.cib_second.outputs.verdict }}
+          CIB_EXIT_CODE: ${{ steps.cib_second.outputs.exit-code }}
+          CIB_REPORT_PATH: ${{ steps.cib_second.outputs.report-path }}
+        run: |
+          test "${CIB_VERDICT}" = "pass"
+          test "${CIB_EXIT_CODE}" = "0"
+          test -f "${CIB_ACTION_OUTPUT_ROOT}/${CIB_REPORT_PATH}"
+          test "$(cat "${RUNNER_TEMP}/cib-first-output-root")" != \
+            "${CIB_ACTION_OUTPUT_ROOT}"

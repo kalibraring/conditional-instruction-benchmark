@@ -28,13 +28,10 @@ def build_product_decision(
     thresholds = metadata["thresholds"]
     required_rate = float(required["rate"])
     unnecessary_rate = float(unnecessary["rate"])
-    selected_row_count = int(required["n"]) + int(unnecessary["n"])
-    selected_harness_failures = int(required["harness_failures"]) + int(
-        unnecessary["harness_failures"]
-    )
+    row_count = int(report["integrity"]["result_rows"])
     harness_rate = (
-        selected_harness_failures / selected_row_count
-        if selected_row_count
+        float(report["integrity"]["harness_failures"]) / row_count
+        if row_count
         else 1.0
     )
     required_passed = required_rate >= thresholds["minimum_required_use_rate"]

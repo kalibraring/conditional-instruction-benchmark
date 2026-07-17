@@ -414,7 +414,7 @@ def test_check_materializes_every_pair_and_repetition_for_all_policies(
     assert {cell["n"] for cell in report["cells"]} == {4}
 
 
-def test_decision_applies_harness_threshold_only_to_selected_policy() -> None:
+def test_decision_fails_when_a_mandatory_control_arm_has_harness_failure() -> None:
     report = {
         "integrity": {
             "passed": True,
@@ -461,11 +461,11 @@ def test_decision_applies_harness_threshold_only_to_selected_policy() -> None:
 
     decision = build_product_decision(report, metadata)
 
-    assert decision["verdict"] == "pass"
+    assert decision["verdict"] == "fail"
     assert decision["harness_failures"] == {
-        "rate": 0.0,
+        "rate": 0.25,
         "threshold": 0.0,
-        "passed": True,
+        "passed": False,
     }
 
 
@@ -500,7 +500,11 @@ def test_composite_action_runs_check_and_uploads_only_public_artifacts() -> None
     check_step = next(step for step in steps if step.get("id") == "check")
     assert check_step["if"] == "always()"
     assert "cib check" in check_step["run"]
+    assert 'mktemp -d "${RUNNER_TEMP}/cib-check-output-XXXXXX"' in check_step["run"]
+    assert "candidate_status == raw_status" in check_step["run"]
     assert "report-path=" in check_step["run"]
+    assert 'report_path = result["report_html"]' in check_step["run"]
+    assert "result_path.parent / result" not in check_step["run"]
     assert "status = 2" in check_step["run"]
     assert 'expected_status = {"pass": 0, "fail": 1, "invalid": 2}' in check_step["run"]
     upload = next(
@@ -528,4 +532,6 @@ def test_hosted_ci_exercises_the_local_composite_action_without_model_quota() ->
     assert 'openai-api-key: "fixture-api-key"' in workflow
     assert 'steps.cib.outputs.verdict == \'pass\'' in workflow
     assert "steps.cib.outputs.report-path" in workflow
-    assert 'test -f "${CIB_REPORT_PATH}"' in workflow
+    assert 'test -f "${CIB_ACTION_OUTPUT_ROOT}/${CIB_REPORT_PATH}"' in workflow
+    assert "id: cib_second" in workflow
+    assert "cib-first-output-root" in workflow

@@ -18,6 +18,7 @@ from .tasks import CASES, TaskCase
 
 
 PROMPTFOO_BEHAVIORAL_FAILURE_EXIT = 100
+PROMPTFOO_TERMINATION_GRACE_SECONDS = 5.0
 
 
 def promptfoo_command(
@@ -114,12 +115,7 @@ def run_promptfoo_study(
     try:
         return_code = process.wait(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as error:
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        _terminate_process_group(process)
         execution["finished_at_unix"] = time.time()
         execution["duration_seconds"] = (
             execution["finished_at_unix"] - execution["started_at_unix"]
@@ -150,6 +146,37 @@ def run_promptfoo_study(
         json.dumps(outcome, indent=2), encoding="utf-8"
     )
     return outcome
+
+
+def _terminate_process_group(process: subprocess.Popen[Any]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        process.wait()
+        return
+    try:
+        process.wait(timeout=0.1)
+    except subprocess.TimeoutExpired:
+        pass
+    deadline = time.monotonic() + PROMPTFOO_TERMINATION_GRACE_SECONDS
+    while time.monotonic() < deadline and _process_group_exists(process.pid):
+        time.sleep(0.05)
+    if _process_group_exists(process.pid):
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    process.wait()
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def run_direct_study(

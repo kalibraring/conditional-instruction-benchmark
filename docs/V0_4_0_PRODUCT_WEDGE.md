@@ -73,7 +73,8 @@ general causal claim and does not prove future model behavior.
    validation fails.
 2. It refuses to reuse an output directory.
 3. It materializes every matched positive/negative prompt for all three
-   scientific arms while applying thresholds only to the selected policy.
+   scientific arms. Behavioral routing thresholds apply only to the selected
+   policy; the harness-failure threshold covers all mandatory arms.
 4. It preserves the v0.3 isolation, nonce, canonical scoring, and protected-raw
    evidence boundaries.
 5. It writes `check-result.json` and `report/report.{json,md,html}`.
@@ -104,4 +105,5 @@ general causal claim and does not prove future model behavior.
 - Action metadata tests prove the public inputs, outputs, pinned dependencies,
   CLI invocation, and safe artifact upload.
 - A built wheel, fresh clone, publication scan, hosted CI, and one real
-  six-trial check pass before release.
+  six-trial check with valid evidence integrity complete before release. The
+  behavioral verdict may pass or fail and is reported without selection.

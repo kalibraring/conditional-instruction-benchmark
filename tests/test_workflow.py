@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+import time
 
 import pytest
 
@@ -21,18 +23,38 @@ def test_scientific_promptfoo_command_forces_non_cached_non_shared_run(tmp_path:
     assert command[command.index("--output") + 1] == str(results.resolve())
 
 
-def test_promptfoo_timeout_is_enforced_and_recorded(tmp_path: Path) -> None:
+def test_promptfoo_timeout_kills_stubborn_descendants_and_records_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     project_root = tmp_path / "project"
     binary = project_root / "node_modules" / ".bin" / "promptfoo"
     binary.parent.mkdir(parents=True)
     binary.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(5)\n",
+        '''#!/usr/bin/env python3
+import subprocess
+import sys
+import time
+
+child = """import os
+import pathlib
+import signal
+import time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+pathlib.Path(os.environ['CIB_TIMEOUT_CHILD_PID']).write_text(str(os.getpid()))
+time.sleep(30)
+"""
+subprocess.Popen([sys.executable, "-c", child])
+time.sleep(30)
+''',
         encoding="utf-8",
     )
     binary.chmod(0o755)
     auth = tmp_path / "auth.json"
     auth.write_text("{}", encoding="utf-8")
     run_dir = tmp_path / "run"
+    child_pid_path = tmp_path / "child.pid"
+    monkeypatch.setenv("CIB_TIMEOUT_CHILD_PID", str(child_pid_path))
 
     with pytest.raises(RuntimeError, match="Promptfoo execution timed out"):
         run_promptfoo_study(
@@ -54,4 +76,14 @@ def test_promptfoo_timeout_is_enforced_and_recorded(tmp_path: Path) -> None:
     assert execution["trial_count"] == 6
     assert execution["timed_out"] is True
     assert execution["promptfoo_exit_code"] is None
-    assert execution["duration_seconds"] >= 1
+    assert execution["duration_seconds"] >= 6
+    child_pid = int(child_pid_path.read_text())
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("Promptfoo timeout left a descendant process running")
