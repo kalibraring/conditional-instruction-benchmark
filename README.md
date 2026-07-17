@@ -96,8 +96,18 @@ integrity evidence was invalid. One replicate is deliberately labeled
 `smoke only`; it is not a general causal claim or a guarantee of future model
 behavior.
 
-Edit `cib.yaml` to describe your routing check. The complete schema and claim
-boundary are in [the v0.4.0 product contract](docs/V0_4_0_PRODUCT_WEDGE.md).
+Edit `cib.yaml` to describe your routing check. Give every trial its own timeout
+and give the complete study a separate wall-clock budget. The complete timeout
+and migration contract is in [the v0.5.0 timeout contract](docs/V0_5_0_TIMEOUTS.md);
+the product and claim boundary remain in
+[the v0.4.0 product contract](docs/V0_4_0_PRODUCT_WEDGE.md).
+
+Validate prerequisites and inspect the resolved timeout contract without model
+calls:
+
+```bash
+cib doctor --config cib.yaml
+```
 
 ## GitHub Action
 
@@ -115,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kalibraring/conditional-instruction-benchmark@v0.4.0
+      - uses: kalibraring/conditional-instruction-benchmark@v0.5.0
         with:
           config: cib.yaml
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -125,7 +135,8 @@ The action performs a non-interactive API-key login in an ephemeral Codex home,
 runs the same `cib check` command, uploads only `check-result.json` and the safe
 report directory, and fails the job for threshold or integrity failures. It
 never uploads protected raw evidence, the private config copy, or authentication
-material.
+material. Use `cib-check/2` in the referenced config so per-trial and whole-study
+budgets remain explicit in CI.
 
 ## Scientific workflow
 
@@ -149,7 +160,9 @@ uv run cib study \
   --case literal_flag \
   --placement prompt_start \
   --replicates 1 \
-  --jobs 2
+  --jobs 2 \
+  --trial-timeout-seconds 300 \
+  --study-timeout-seconds 960
 uv run cib report results/smoke-v1
 ```
 
@@ -214,6 +227,7 @@ not a new causal finding. See:
 - [Promptfoo capability research](research/PROMPTFOO_RESEARCH.md).
 - [v0.3.0 reporting contract](docs/V0_3_0_RESEARCH_READY.md).
 - [v0.4.0 one-command product contract](docs/V0_4_0_PRODUCT_WEDGE.md).
+- [v0.5.0 timeout and migration contract](docs/V0_5_0_TIMEOUTS.md).
 
 ## Product and project
 

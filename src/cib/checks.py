@@ -19,9 +19,15 @@ from .tasks import TaskCase
 from .workflow import run_direct_study, run_promptfoo_study
 
 
-CHECK_SCHEMA_VERSION = "cib-check/1"
+CHECK_SCHEMA_VERSION = "cib-check/2"
+LEGACY_CHECK_SCHEMA_VERSION = "cib-check/1"
 CHECK_RESULT_SCHEMA_VERSION = "cib-check-result/1"
 SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+LEGACY_TIMEOUT_WARNING = (
+    "cib-check/1 is deprecated; timeout_seconds retains its legacy "
+    "backend-dependent meaning. Migrate to cib-check/2 with explicit "
+    "trial_timeout_seconds and study_timeout_seconds."
+)
 
 
 class CheckConfigError(ValueError):
@@ -30,6 +36,7 @@ class CheckConfigError(ValueError):
 
 @dataclass(frozen=True)
 class CheckConfig:
+    schema_version: str
     name: str
     condition: str
     placement: str
@@ -42,7 +49,10 @@ class CheckConfig:
     repetitions: int
     jobs: int
     seed: int
-    timeout_seconds: int
+    trial_timeout_seconds: int | None
+    study_timeout_seconds: int | None
+    timeout_source: str
+    legacy_warning: str | None
     minimum_required_use_rate: float
     minimum_avoided_unnecessary_use_rate: float
     maximum_harness_failure_rate: float
@@ -96,7 +106,8 @@ def load_check_config(path: Path) -> CheckConfig:
         },
         "configuration",
     )
-    if root.get("schema_version") != CHECK_SCHEMA_VERSION:
+    schema_version = root.get("schema_version")
+    if schema_version not in (CHECK_SCHEMA_VERSION, LEGACY_CHECK_SCHEMA_VERSION):
         raise CheckConfigError("Unsupported check configuration schema")
     name = _text(root.get("name"), "name")
     if not SAFE_NAME.fullmatch(name):
@@ -120,19 +131,20 @@ def load_check_config(path: Path) -> CheckConfig:
         raise CheckConfigError("Required and unnecessary cases must be paired")
 
     execution = _mapping(root.get("execution"), "execution")
-    _keys(
-        execution,
-        {
-            "backend",
-            "model",
-            "reasoning_effort",
-            "repetitions",
-            "jobs",
-            "seed",
-            "timeout_seconds",
-        },
-        "execution",
+    common_execution_fields = {
+        "backend",
+        "model",
+        "reasoning_effort",
+        "repetitions",
+        "jobs",
+        "seed",
+    }
+    timeout_fields = (
+        {"trial_timeout_seconds", "study_timeout_seconds"}
+        if schema_version == CHECK_SCHEMA_VERSION
+        else {"timeout_seconds"}
     )
+    _keys(execution, common_execution_fields | timeout_fields, "execution")
     backend = _text(execution.get("backend"), "execution backend")
     if backend not in CAPABILITIES:
         raise CheckConfigError("Unsupported execution backend")
@@ -152,9 +164,27 @@ def load_check_config(path: Path) -> CheckConfig:
     repetitions = _positive_int(execution.get("repetitions"), "repetitions")
     jobs = _positive_int(execution.get("jobs"), "jobs")
     seed = _integer(execution.get("seed"), "seed")
-    timeout_seconds = _positive_int(
-        execution.get("timeout_seconds"), "timeout seconds"
-    )
+    if schema_version == CHECK_SCHEMA_VERSION:
+        trial_timeout_seconds = _positive_int(
+            execution.get("trial_timeout_seconds"), "trial timeout seconds"
+        )
+        study_timeout_seconds = _positive_int(
+            execution.get("study_timeout_seconds"), "study timeout seconds"
+        )
+        timeout_source = "explicit"
+        legacy_warning = None
+    else:
+        legacy_timeout_seconds = _positive_int(
+            execution.get("timeout_seconds"), "timeout seconds"
+        )
+        if backend == "promptfoo-codex-sdk":
+            trial_timeout_seconds = None
+            study_timeout_seconds = legacy_timeout_seconds
+        else:
+            trial_timeout_seconds = legacy_timeout_seconds
+            study_timeout_seconds = None
+        timeout_source = "legacy_cib_check_1"
+        legacy_warning = LEGACY_TIMEOUT_WARNING
 
     thresholds = _mapping(root.get("thresholds"), "thresholds")
     _keys(
@@ -178,6 +208,7 @@ def load_check_config(path: Path) -> CheckConfig:
         "maximum harness-failure rate",
     )
     return CheckConfig(
+        schema_version=schema_version,
         name=name,
         condition=condition,
         placement=placement,
@@ -190,7 +221,10 @@ def load_check_config(path: Path) -> CheckConfig:
         repetitions=repetitions,
         jobs=jobs,
         seed=seed,
-        timeout_seconds=timeout_seconds,
+        trial_timeout_seconds=trial_timeout_seconds,
+        study_timeout_seconds=study_timeout_seconds,
+        timeout_source=timeout_source,
+        legacy_warning=legacy_warning,
         minimum_required_use_rate=minimum_required,
         minimum_avoided_unnecessary_use_rate=minimum_unnecessary,
         maximum_harness_failure_rate=maximum_harness,
@@ -242,13 +276,17 @@ def run_check(
     if config.backend == "promptfoo-codex-sdk":
         run_promptfoo_study(
             project_root=project_root,
-            timeout_seconds=config.timeout_seconds,
+            trial_timeout_seconds=config.trial_timeout_seconds,
+            study_timeout_seconds=config.study_timeout_seconds,
+            timeout_source=config.timeout_source,
             custom_case=custom_case,
             **common,
         )
     else:
         run_direct_study(
-            timeout_seconds=config.timeout_seconds,
+            trial_timeout_seconds=config.trial_timeout_seconds,
+            study_timeout_seconds=config.study_timeout_seconds,
+            timeout_source=config.timeout_source,
             custom_case=custom_case,
             **common,
         )

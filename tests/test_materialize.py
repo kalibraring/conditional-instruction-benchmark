@@ -45,9 +45,15 @@ class MaterializationTests(unittest.TestCase):
                 self.assertNotIn(str(root), json.dumps(public_row))
 
             config_path, tests_path = export_promptfoo_suite(
-                materialized, root / "run" / "promptfoo"
+                materialized,
+                root / "run" / "promptfoo",
+                trial_timeout_seconds=30,
+                study_timeout_seconds=180,
             )
             self.assertTrue(config_path.exists())
+            config = config_path.read_text()
+            self.assertIn("timeoutMs: 30000", config)
+            self.assertIn("maxEvalTimeMs: 180000", config)
             tests = [json.loads(line) for line in tests_path.read_text().splitlines()]
             self.assertEqual(len(tests), 6)
             self.assertEqual(

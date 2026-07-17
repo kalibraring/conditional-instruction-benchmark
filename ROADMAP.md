@@ -33,7 +33,14 @@ workflow before expanding agent breadth.
 - Ship a reusable, least-privilege GitHub Action that uploads only sanitized
   evidence.
 
-## v0.5 — portable agent comparison
+## v0.5 — reliable execution budgets
+
+- Separate per-trial and whole-study timeouts in configuration and CLI use.
+- Preserve the exact legacy behavior of `cib-check/1` during migration.
+- Enforce limits in Promptfoo, the outer process group, and direct Codex.
+- Attribute timeout scope in canonical audits and public reports.
+
+## v0.6 — portable agent comparison
 
 - Add one non-Codex adapter behind a capability declaration.
 - Map shared and unsupported instruction surfaces explicitly.

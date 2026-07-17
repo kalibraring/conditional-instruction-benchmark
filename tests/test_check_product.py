@@ -6,8 +6,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
+from cib.checks import CheckConfigError, load_check_config, run_check
 from cib.product_decision import build_product_decision
 
 
@@ -65,7 +67,7 @@ print(json.dumps({"type": "turn.completed", "usage": {"total_tokens": 10}}))
 
 def _write_passing_config(path: Path) -> None:
     path.write_text(
-        """schema_version: cib-check/1
+        """schema_version: cib-check/2
 name: deploy-routing
 instruction:
   condition: the request contains SHOULD_USE
@@ -83,7 +85,8 @@ execution:
   repetitions: 1
   jobs: 2
   seed: 17
-  timeout_seconds: 30
+  trial_timeout_seconds: 30
+  study_timeout_seconds: 180
 thresholds:
   minimum_required_use_rate: 1.0
   minimum_avoided_unnecessary_use_rate: 1.0
@@ -91,6 +94,209 @@ thresholds:
 """,
         encoding="utf-8",
     )
+
+
+def test_v2_check_requires_explicit_trial_and_study_timeouts(tmp_path: Path) -> None:
+    config = tmp_path / "cib.yaml"
+    _write_passing_config(config)
+
+    parsed = load_check_config(config)
+
+    assert parsed.schema_version == "cib-check/2"
+    assert parsed.trial_timeout_seconds == 30
+    assert parsed.study_timeout_seconds == 180
+    assert parsed.timeout_source == "explicit"
+    assert parsed.legacy_warning is None
+
+
+def test_doctor_with_config_reports_resolved_timeout_contract(tmp_path: Path) -> None:
+    config = tmp_path / "cib.yaml"
+    auth = tmp_path / "auth.json"
+    _write_passing_config(config)
+    auth.write_text("{}", encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "doctor",
+            "--config",
+            str(config),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode in {0, 2}, completed.stderr
+    report = json.loads(completed.stdout)
+    assert report["check_timeout_policy"] == {
+        "schema_version": "cib-check/2",
+        "trial_seconds": 30,
+        "study_seconds": 180,
+        "source": "explicit",
+        "legacy_warning": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ["--trial-timeout-seconds", "0"],
+        ["--study-timeout-seconds", "-1"],
+        ["--timeout", "0"],
+    ),
+)
+def test_study_cli_rejects_nonpositive_timeouts_before_execution(
+    tmp_path: Path, arguments: list[str]
+) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "study",
+            "--run-id",
+            "invalid-timeout",
+            "--output-dir",
+            str(tmp_path / "must-not-exist"),
+            *arguments,
+        ],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "must be a positive integer" in completed.stderr
+    assert not (tmp_path / "must-not-exist").exists()
+
+
+def test_promptfoo_outer_watchdog_produces_invalid_check_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "cib.yaml"
+    _write_passing_config(config_path)
+    config_value = yaml.safe_load(config_path.read_text())
+    config_value["execution"].update(
+        {
+            "backend": "promptfoo-codex-sdk",
+            "trial_timeout_seconds": 30,
+            "study_timeout_seconds": 1,
+        }
+    )
+    config_path.write_text(
+        yaml.safe_dump(config_value, sort_keys=False), encoding="utf-8"
+    )
+    project_root = tmp_path / "project"
+    binary = project_root / "node_modules" / ".bin" / "promptfoo"
+    binary.parent.mkdir(parents=True)
+    binary.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+import time
+
+output = pathlib.Path(sys.argv[sys.argv.index("--output") + 1])
+output.write_bytes(b'{"output":"\\xf0\\x9f')
+time.sleep(30)
+""",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    output = tmp_path / "output"
+    monkeypatch.setattr(
+        "cib.checks.inspect_environment",
+        lambda *args, **kwargs: {"ready": True, "checks": {}},
+    )
+    monkeypatch.setattr("cib.workflow.PROMPTFOO_PROCESS_EXIT_GRACE_SECONDS", 0)
+    monkeypatch.setattr("cib.workflow.PROMPTFOO_TERMINATION_GRACE_SECONDS", 0)
+
+    result = run_check(
+        config=load_check_config(config_path),
+        output_dir=output,
+        auth_path=auth,
+        project_root=project_root,
+    )
+
+    assert result["verdict"] == "invalid"
+    assert result["exit_code"] == 2
+    assert (output / "check-result.json").is_file()
+    assert (output / "report" / "report.html").is_file()
+    report = json.loads((output / "report" / "report.json").read_text())
+    assert report["integrity"]["study_timed_out"] is True
+    assert report["integrity"]["study_timeout_count"] == 6
+    assert report["run"]["timeouts"]["study_seconds"] == 1
+
+
+@pytest.mark.parametrize(
+    ("backend", "trial_timeout", "study_timeout"),
+    (
+        ("direct-codex", 30, None),
+        ("promptfoo-codex-sdk", None, 30),
+    ),
+)
+def test_v1_check_preserves_backend_dependent_timeout_semantics(
+    tmp_path: Path,
+    backend: str,
+    trial_timeout: int | None,
+    study_timeout: int | None,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    _write_passing_config(config)
+    value = yaml.safe_load(config.read_text())
+    value["schema_version"] = "cib-check/1"
+    value["execution"]["backend"] = backend
+    value["execution"].pop("trial_timeout_seconds")
+    value["execution"].pop("study_timeout_seconds")
+    value["execution"]["timeout_seconds"] = 30
+    config.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+
+    parsed = load_check_config(config)
+
+    assert parsed.schema_version == "cib-check/1"
+    assert parsed.trial_timeout_seconds == trial_timeout
+    assert parsed.study_timeout_seconds == study_timeout
+    assert parsed.timeout_source == "legacy_cib_check_1"
+    assert "deprecated" in parsed.legacy_warning.lower()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_trial",
+        "missing_study",
+        "mixed_legacy",
+        "boolean_trial",
+        "zero_study",
+    ),
+)
+def test_v2_check_rejects_incomplete_mixed_or_invalid_timeouts(
+    tmp_path: Path, mutation: str
+) -> None:
+    config = tmp_path / "cib.yaml"
+    _write_passing_config(config)
+    value = yaml.safe_load(config.read_text())
+    execution = value["execution"]
+    if mutation == "missing_trial":
+        execution.pop("trial_timeout_seconds")
+    elif mutation == "missing_study":
+        execution.pop("study_timeout_seconds")
+    elif mutation == "mixed_legacy":
+        execution["timeout_seconds"] = 30
+    elif mutation == "boolean_trial":
+        execution["trial_timeout_seconds"] = True
+    else:
+        execution["study_timeout_seconds"] = 0
+    config.write_text(yaml.safe_dump(value, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(CheckConfigError):
+        load_check_config(config)
 
 
 def test_check_runs_one_user_config_and_writes_one_plain_english_decision(
