@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "0.144.5",
-    "promptfoo": "0.121.18"
+    "promptfoo": "0.121.19"
   },
   "scripts": {
     "promptfoo": "promptfoo",
