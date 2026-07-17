@@ -125,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kalibraring/conditional-instruction-benchmark@v0.5.0
+      - uses: kalibraring/conditional-instruction-benchmark@v0.5.1
         with:
           config: cib.yaml
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}

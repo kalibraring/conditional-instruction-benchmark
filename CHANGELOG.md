@@ -11,6 +11,17 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.5.1] - 2026-07-18
+
+### Fixed
+
+- Give every Promptfoo-backed run its own state directory so concurrent CIB
+  processes cannot contend for the same SQLite database.
+- Pin the canary assertion bridge to the Python interpreter running CIB, rather
+  than an unrelated system `python3` that may not have CIB installed.
+- Disable Promptfoo telemetry for deterministic benchmark execution while
+  preserving its explicit JSONL evidence export.
+
 ## [0.5.0] - 2026-07-17
 
 ### Added
@@ -88,7 +99,8 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.3.0
