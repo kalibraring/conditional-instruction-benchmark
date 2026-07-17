@@ -11,6 +11,10 @@ compatibility boundary.
 - Align contributors and CI on the npm 11.11.1 lockfile toolchain used by
   dependency automation.
 
+### Changed
+
+- Update the validated Codex SDK to 0.144.5 and Promptfoo to 0.121.19.
+
 ### Planned
 
 - Separate recovery-run command and development profile.
