@@ -12,6 +12,9 @@ go directly to a pull request.
 
 ## Setup
 
+Use Node 22.22 or newer and npm 11.11.1. The npm version in `package.json` is
+part of the lockfile contract shared by contributors, CI, and Dependabot.
+
 ```bash
 git clone https://github.com/kalibraring/conditional-instruction-benchmark.git
 cd conditional-instruction-benchmark

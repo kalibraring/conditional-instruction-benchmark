@@ -6,6 +6,11 @@ compatibility boundary.
 
 ## [Unreleased]
 
+### Fixed
+
+- Align contributors and CI on the npm 11.11.1 lockfile toolchain used by
+  dependency automation.
+
 ### Planned
 
 - Separate recovery-run command and development profile.

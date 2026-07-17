@@ -34,6 +34,7 @@ Requirements:
 
 - Python 3.11 or newer;
 - Node 22.22 or newer;
+- npm 11.11.1, as pinned by `packageManager` in `package.json`;
 - an installed and authenticated Codex CLI;
 - `uv` for the documented development workflow.
 
