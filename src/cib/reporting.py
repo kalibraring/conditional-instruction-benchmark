@@ -291,7 +291,7 @@ def _load_check_metadata(path: Path, run_dir: Path) -> dict[str, Any]:
     ):
         if not isinstance(metadata[field], str):
             raise ReportValidationError("Check metadata text field is invalid")
-        _validate_public_text(metadata[field], field)
+        validate_public_text(metadata[field], field)
     if metadata["policy"] not in POLICY_ARMS:
         raise ReportValidationError("Check metadata policy is invalid")
     if metadata["selected_arm"] != POLICY_ARMS[metadata["policy"]]:
@@ -345,7 +345,7 @@ def _load_manifest(path: Path, run_dir: Path) -> list[dict[str, Any]]:
                 f"Public manifest row is missing fields: {missing}"
             )
         for field in PUBLIC_TEXT_FIELDS:
-            _validate_public_text(str(row[field]), field)
+            validate_public_text(str(row[field]), field)
         _require_boolean(row, "condition_true")
         if row["arm"] not in ARMS:
             raise ReportValidationError("Unsupported instruction arm")
@@ -568,13 +568,18 @@ def render_markdown(report: dict[str, Any]) -> str:
                 decision["headline"],
                 "",
                 f"**Required use:** {_percent(decision['required_use']['rate'])} "
-                f"(minimum {_percent(decision['required_use']['threshold'])})  ",
+                f"(minimum {_percent(decision['required_use']['threshold'])}) — "
+                f"**{_pass_fail(decision['required_use']['passed'])}**  ",
                 "**Avoided unnecessary use:** "
                 f"{_percent(decision['avoided_unnecessary_use']['rate'])} "
                 "(minimum "
-                f"{_percent(decision['avoided_unnecessary_use']['threshold'])})  ",
+                f"{_percent(decision['avoided_unnecessary_use']['threshold'])}) — "
+                f"**{_pass_fail(decision['avoided_unnecessary_use']['passed'])}**  ",
                 f"**Harness failures:** {_percent(decision['harness_failures']['rate'])} "
-                f"(maximum {_percent(decision['harness_failures']['threshold'])})  ",
+                f"(maximum {_percent(decision['harness_failures']['threshold'])}) — "
+                f"**{_pass_fail(decision['harness_failures']['passed'])}**  ",
+                "**Evidence integrity:** "
+                f"**{_pass_fail(decision['integrity_passed'])}**  ",
                 "**Evidence strength:** "
                 f"{str(decision['evidence_strength']).replace('_', ' ')}",
                 "",
@@ -699,15 +704,25 @@ def render_html(report: dict[str, Any]) -> str:
     if isinstance(decision, dict):
         verdict = str(decision["verdict"]).upper()
         verdict_class = "pass" if decision["verdict"] == "pass" else "fail"
+        required_status = _pass_fail(decision["required_use"]["passed"])
+        unnecessary_status = _pass_fail(
+            decision["avoided_unnecessary_use"]["passed"]
+        )
+        harness_status = _pass_fail(decision["harness_failures"]["passed"])
+        decision_integrity = _pass_fail(decision["integrity_passed"])
+        integrity_status_class = (
+            "pass" if decision["integrity_passed"] else "fail"
+        )
         decision_html = f"""
 <section class="decision">
 <h1>{html.escape(verdict)}</h1>
 <p class="headline {verdict_class}">{html.escape(str(decision['headline']))}</p>
 <div class="decision-grid">
-<p><strong>Required use</strong><br>{_percent(decision['required_use']['rate'])}<br><small>minimum {_percent(decision['required_use']['threshold'])}</small></p>
-<p><strong>Avoided unnecessary use</strong><br>{_percent(decision['avoided_unnecessary_use']['rate'])}<br><small>minimum {_percent(decision['avoided_unnecessary_use']['threshold'])}</small></p>
-<p><strong>Harness failures</strong><br>{_percent(decision['harness_failures']['rate'])}<br><small>maximum {_percent(decision['harness_failures']['threshold'])}</small></p>
+<p><strong>Required use</strong><br>{_percent(decision['required_use']['rate'])}<br><small>minimum {_percent(decision['required_use']['threshold'])} · {required_status}</small></p>
+<p><strong>Avoided unnecessary use</strong><br>{_percent(decision['avoided_unnecessary_use']['rate'])}<br><small>minimum {_percent(decision['avoided_unnecessary_use']['threshold'])} · {unnecessary_status}</small></p>
+<p><strong>Harness failures</strong><br>{_percent(decision['harness_failures']['rate'])}<br><small>maximum {_percent(decision['harness_failures']['threshold'])} · {harness_status}</small></p>
 </div>
+<p><strong>Evidence integrity:</strong> <span class="{integrity_status_class}">{decision_integrity}</span></p>
 <p><strong>Evidence strength:</strong> {html.escape(str(decision['evidence_strength']).replace('_', ' '))}</p>
 <p>Passing configured thresholds is not a general causal claim or a guarantee of future model behavior.</p>
 </section>
@@ -820,7 +835,7 @@ def _display_path(path: Path, base: Path) -> str:
     return path.relative_to(base).as_posix()
 
 
-def _validate_public_text(value: str, field: str) -> None:
+def validate_public_text(value: str, field: str) -> None:
     if (
         any(ord(character) < 32 for character in value)
         or PurePosixPath(value).is_absolute()
@@ -836,6 +851,10 @@ def _validate_public_text(value: str, field: str) -> None:
 
 def _percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.1%}"
+
+
+def _pass_fail(value: bool) -> str:
+    return "PASS" if value else "FAIL"
 
 
 def _signed_percent(value: float | None) -> str:

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
-from .tasks import CASES
+from .tasks import CASES, TaskCase
 
 
 Arm = Literal["if", "iff", "if_else_not"]
@@ -51,8 +51,13 @@ def instruction_for(
     raise ValueError(f"Unknown arm: {arm}")
 
 
-def write_fixture(root: Path, spec: TrialSpec, nonce: str) -> None:
-    case = CASES[spec.case_id]
+def write_fixture(
+    root: Path,
+    spec: TrialSpec,
+    nonce: str,
+    cases: Mapping[str, TaskCase] | None = None,
+) -> None:
+    case = (cases if cases is not None else CASES)[spec.case_id]
     skill_dir = root / ".agents" / "skills" / "canary-resource"
     resources_dir = root / "resources"
     resources_dir.mkdir(parents=True)
@@ -127,8 +132,11 @@ def write_fixture(root: Path, spec: TrialSpec, nonce: str) -> None:
     )
 
 
-def prompt_for(spec: TrialSpec) -> str:
-    case = CASES[spec.case_id]
+def prompt_for(
+    spec: TrialSpec,
+    cases: Mapping[str, TaskCase] | None = None,
+) -> str:
+    case = (cases if cases is not None else CASES)[spec.case_id]
     if spec.representation == "negated" and spec.case_id == "literal_flag":
         exclusion = "BETA" if spec.condition_true else "ALPHA"
         fact = (

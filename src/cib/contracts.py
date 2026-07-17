@@ -139,9 +139,10 @@ class MaterializedTrial:
         }
 
     def to_public_dict(self) -> dict[str, Any]:
-        value = self.to_private_dict()
-        value.pop("nonce")
-        return value
+        return {
+            **self.manifest.to_public_dict(),
+            "fixture_hash": self.fixture_hash,
+        }
 
 
 @dataclass

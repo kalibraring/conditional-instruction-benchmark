@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .contracts import MaterializedTrial
 from .scoring import target_fragment
 from .trials import prompt_for
+from .tasks import TaskCase
 
 
 def export_promptfoo_suite(
-    rows: Iterable[MaterializedTrial], output_dir: Path
+    rows: Iterable[MaterializedTrial],
+    output_dir: Path,
+    cases: Mapping[str, TaskCase] | None = None,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = output_dir / "protected" / "raw"
@@ -29,7 +32,7 @@ def export_promptfoo_suite(
             {
                 "description": manifest.trial_id,
                 "vars": {
-                    "rendered_prompt": prompt_for(manifest.to_spec()),
+                    "rendered_prompt": prompt_for(manifest.to_spec(), cases),
                     "cib_manifest": manifest.to_private_dict(),
                     "target_fragment": target_fragment(manifest.placement),
                 },

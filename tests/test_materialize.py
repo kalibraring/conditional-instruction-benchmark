@@ -31,6 +31,19 @@ class MaterializationTests(unittest.TestCase):
                 self.assertTrue(Path(row.codex_home, "auth.json").is_symlink())
                 self.assertTrue(row.fixture_hash)
 
+            public_rows = [
+                json.loads(line)
+                for line in (root / "run" / "materialized-manifest.jsonl")
+                .read_text()
+                .splitlines()
+            ]
+            self.assertTrue(public_rows)
+            for public_row in public_rows:
+                self.assertNotIn("working_dir", public_row)
+                self.assertNotIn("home", public_row)
+                self.assertNotIn("codex_home", public_row)
+                self.assertNotIn(str(root), json.dumps(public_row))
+
             config_path, tests_path = export_promptfoo_suite(
                 materialized, root / "run" / "promptfoo"
             )

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import yaml
 
+from cib.product_decision import build_product_decision
+
 
 def _write_fake_codex(bin_dir: Path) -> None:
     executable = bin_dir / "codex"
@@ -165,10 +167,15 @@ def test_check_runs_one_user_config_and_writes_one_plain_english_decision(
     html = (output / "report" / "report.html").read_text()
     assert markdown.index("# PASS") < markdown.index("<summary>Method and evidence</summary>")
     assert "The instruction met both routing thresholds." in markdown
+    assert "**Evidence integrity:** **PASS**" in markdown
+    assert "**Harness failures:** 0.0% (maximum 0.0%) — **PASS**" in markdown
     assert html.index("<h1>PASS</h1>") < html.index(
         "<summary>Method and evidence</summary>"
     )
     assert "The instruction met both routing thresholds." in html
+    assert "<strong>Evidence integrity:</strong>" in html
+    assert ">PASS</span>" in html
+    assert "maximum 0.0% · PASS" in html
     public_output = (
         completed.stdout
         + completed.stderr
@@ -272,6 +279,48 @@ def test_check_rejects_unknown_config_before_model_calls_without_echoing_values(
     assert not output.exists()
 
 
+def test_check_rejects_unsafe_public_metadata_before_writing_output(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "bin"
+    _write_passing_config(config)
+    sensitive_value = "/" + "Users/example/private-model"
+    parsed = yaml.safe_load(config.read_text())
+    parsed["execution"]["model"] = sensitive_value
+    config.write_text(yaml.safe_dump(parsed, sort_keys=False), encoding="utf-8")
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Model is unsafe for public evidence" in completed.stderr
+    assert sensitive_value not in completed.stdout + completed.stderr
+    assert not (bin_dir / "model-called").exists()
+    assert not output.exists()
+
+
 def test_check_refuses_output_reuse_before_model_calls(tmp_path: Path) -> None:
     config = tmp_path / "cib.yaml"
     output = tmp_path / "check-output"
@@ -365,6 +414,61 @@ def test_check_materializes_every_pair_and_repetition_for_all_policies(
     assert {cell["n"] for cell in report["cells"]} == {4}
 
 
+def test_decision_applies_harness_threshold_only_to_selected_policy() -> None:
+    report = {
+        "integrity": {
+            "passed": True,
+            "result_rows": 4,
+            "harness_failures": 1,
+        },
+        "cells": [
+            {
+                "arm": "iff",
+                "placement": "skill_description",
+                "condition_true": True,
+                "rate": 1.0,
+                "n": 1,
+                "harness_failures": 0,
+            },
+            {
+                "arm": "iff",
+                "placement": "skill_description",
+                "condition_true": False,
+                "rate": 1.0,
+                "n": 1,
+                "harness_failures": 0,
+            },
+            {
+                "arm": "if",
+                "placement": "skill_description",
+                "condition_true": True,
+                "rate": 0.0,
+                "n": 1,
+                "harness_failures": 1,
+            },
+        ],
+    }
+    metadata = {
+        "name": "selected-policy-only",
+        "policy": "strict",
+        "placement": "skill_description",
+        "thresholds": {
+            "minimum_required_use_rate": 1.0,
+            "minimum_avoided_unnecessary_use_rate": 1.0,
+            "maximum_harness_failure_rate": 0.0,
+        },
+    }
+
+    decision = build_product_decision(report, metadata)
+
+    assert decision["verdict"] == "pass"
+    assert decision["harness_failures"] == {
+        "rate": 0.0,
+        "threshold": 0.0,
+        "passed": True,
+    }
+
+
 def test_composite_action_runs_check_and_uploads_only_public_artifacts() -> None:
     root = Path(__file__).parents[1]
     action = yaml.safe_load((root / "action.yml").read_text())
@@ -376,18 +480,29 @@ def test_composite_action_runs_check_and_uploads_only_public_artifacts() -> None
         "artifact-name",
         "retention-days",
     }
-    assert set(action["outputs"]) == {"verdict", "exit-code", "report-artifact"}
+    assert set(action["outputs"]) == {
+        "verdict",
+        "exit-code",
+        "report-path",
+        "report-artifact",
+    }
     steps = action["runs"]["steps"]
     pinned_uses = [step["uses"] for step in steps if "uses" in step]
     assert pinned_uses
     assert all("@" in value and len(value.rsplit("@", 1)[1]) == 40 for value in pinned_uses)
     serialized = (root / "action.yml").read_text()
     assert "codex-auth-json" not in serialized
-    assert "codex login --with-api-key" in serialized
+    assert "login --with-api-key" in serialized
     assert "uv sync --frozen --no-dev" in serialized
-    assert "@openai/codex@0.144.5" in serialized
+    assert 'npm install --global --prefix "${tool_root}" @openai/codex@0.144.5' in serialized
+    assert 'test "$("${codex_bin}" --version)" = "codex-cli 0.144.5"' in serialized
+    assert '"${CIB_CODEX_BIN}" login --with-api-key' in serialized
     check_step = next(step for step in steps if step.get("id") == "check")
+    assert check_step["if"] == "always()"
     assert "cib check" in check_step["run"]
+    assert "report-path=" in check_step["run"]
+    assert "status = 2" in check_step["run"]
+    assert 'expected_status = {"pass": 0, "fail": 1, "invalid": 2}' in check_step["run"]
     upload = next(
         step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")
     )
@@ -399,7 +514,8 @@ def test_composite_action_runs_check_and_uploads_only_public_artifacts() -> None
     assert "private" not in uploaded_paths
     final_gate = steps[-1]
     assert final_gate["if"] == "always()"
-    assert 'exit "${{ steps.check.outputs.exit-code }}"' in final_gate["run"]
+    assert 'case "${CIB_EXIT_CODE:-2}"' in final_gate["run"]
+    assert "*) exit 2" in final_gate["run"]
 
 
 def test_hosted_ci_exercises_the_local_composite_action_without_model_quota() -> None:
@@ -408,6 +524,8 @@ def test_hosted_ci_exercises_the_local_composite_action_without_model_quota() ->
 
     assert "uses: ./" in workflow
     assert "tests/fixtures/action/cib.yaml" in workflow
-    assert "tests/fixtures/action/fake-codex" in workflow
+    assert "tests/fixtures/action/fake-npm" in workflow
     assert 'openai-api-key: "fixture-api-key"' in workflow
     assert 'steps.cib.outputs.verdict == \'pass\'' in workflow
+    assert "steps.cib.outputs.report-path" in workflow
+    assert 'test -f "${CIB_REPORT_PATH}"' in workflow

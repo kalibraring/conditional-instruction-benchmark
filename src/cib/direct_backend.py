@@ -7,16 +7,21 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .codex_adapter import _final_response, _parse_events, _usage
 from .contracts import MaterializedTrial
 from .normalization import normalize_direct_raw
 from .scoring import score_envelope
 from .trials import prompt_for
+from .tasks import TaskCase
 
 
-def direct_command(row: MaterializedTrial, codex_path: str = "codex") -> list[str]:
+def direct_command(
+    row: MaterializedTrial,
+    codex_path: str = "codex",
+    cases: Mapping[str, TaskCase] | None = None,
+) -> list[str]:
     manifest = row.manifest
     return [
         codex_path,
@@ -42,7 +47,7 @@ def direct_command(row: MaterializedTrial, codex_path: str = "codex") -> list[st
         row.working_dir,
         "--output-schema",
         str(Path(row.working_dir) / "output-schema.json"),
-        prompt_for(manifest.to_spec()),
+        prompt_for(manifest.to_spec(), cases),
     ]
 
 
@@ -71,6 +76,7 @@ def run_direct_trial(
     raw_dir: Path,
     timeout_seconds: int = 300,
     codex_path: str = "codex",
+    cases: Mapping[str, TaskCase] | None = None,
 ) -> dict[str, Any]:
     raw_dir.mkdir(parents=True, exist_ok=True)
     target = raw_dir / f"{row.manifest.trial_id}.json"
@@ -78,7 +84,7 @@ def run_direct_trial(
         raise FileExistsError(f"Refusing to replace direct evidence: {target}")
     started = time.monotonic()
     process = subprocess.Popen(
-        direct_command(row, codex_path),
+        direct_command(row, codex_path, cases),
         cwd=row.working_dir,
         env=_isolated_env(row),
         text=True,
@@ -136,6 +142,7 @@ def run_direct_suite(
     jobs: int = 8,
     timeout_seconds: int = 300,
     codex_path: str = "codex",
+    cases: Mapping[str, TaskCase] | None = None,
 ) -> dict[str, Any]:
     materialized = list(rows)
     raw_dir = output_dir / "raw"
@@ -144,7 +151,12 @@ def run_direct_suite(
     with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as executor:
         futures = {
             executor.submit(
-                run_direct_trial, row, raw_dir, timeout_seconds, codex_path
+                run_direct_trial,
+                row,
+                raw_dir,
+                timeout_seconds,
+                codex_path,
+                cases,
             ): row
             for row in materialized
         }

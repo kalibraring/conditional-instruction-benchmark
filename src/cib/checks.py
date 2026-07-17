@@ -14,8 +14,8 @@ import yaml
 from .capabilities import CAPABILITIES, SURFACES
 from .doctor import inspect_environment
 from .product_decision import POLICY_ARMS
-from .reporting import write_report
-from .tasks import CASES, TaskCase
+from .reporting import ReportValidationError, validate_public_text, write_report
+from .tasks import TaskCase
 from .workflow import run_direct_study, run_promptfoo_study
 
 
@@ -138,6 +138,17 @@ def load_check_config(path: Path) -> CheckConfig:
         raise CheckConfigError("Unsupported execution backend")
     model = _text(execution.get("model"), "model")
     reasoning_effort = _text(execution.get("reasoning_effort"), "reasoning effort")
+    for value, public_field in (
+        (model, "model"),
+        (reasoning_effort, "reasoning_effort"),
+    ):
+        try:
+            validate_public_text(value, public_field)
+        except ReportValidationError as error:
+            raise CheckConfigError(
+                f"{public_field.replace('_', ' ').capitalize()} "
+                "is unsafe for public evidence"
+            ) from error
     repetitions = _positive_int(execution.get("repetitions"), "repetitions")
     jobs = _positive_int(execution.get("jobs"), "jobs")
     seed = _integer(execution.get("seed"), "seed")
@@ -215,8 +226,6 @@ def run_check(
         layer="product_check",
         source="user-owned cib.yaml",
     )
-    previous = CASES.get(case_id)
-    CASES[case_id] = custom_case
     run_id = f"{config.name}-{uuid.uuid4().hex[:12]}"
     common = {
         "run_dir": output_dir,
@@ -230,16 +239,19 @@ def run_check(
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
     }
-    try:
-        if config.backend == "promptfoo-codex-sdk":
-            run_promptfoo_study(project_root=project_root, **common)
-        else:
-            run_direct_study(timeout_seconds=config.timeout_seconds, **common)
-    finally:
-        if previous is None:
-            CASES.pop(case_id, None)
-        else:
-            CASES[case_id] = previous
+    if config.backend == "promptfoo-codex-sdk":
+        run_promptfoo_study(
+            project_root=project_root,
+            timeout_seconds=config.timeout_seconds,
+            custom_case=custom_case,
+            **common,
+        )
+    else:
+        run_direct_study(
+            timeout_seconds=config.timeout_seconds,
+            custom_case=custom_case,
+            **common,
+        )
 
     metadata_path = output_dir / "check-metadata.json"
     (output_dir / "check-config.private.yaml").write_text(

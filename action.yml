@@ -24,6 +24,9 @@ outputs:
   exit-code:
     description: "CIB exit code: 0 pass, 1 threshold failure, or 2 invalid evidence."
     value: ${{ steps.check.outputs.exit-code }}
+  report-path:
+    description: Absolute path to the sanitized HTML report in the current job.
+    value: ${{ steps.check.outputs.report-path }}
   report-artifact:
     description: Name of the uploaded safe report artifact.
     value: ${{ inputs.artifact-name }}
@@ -49,14 +52,16 @@ runs:
         python -m pip install --disable-pip-version-check uv==0.9.25
         uv sync --frozen --no-dev
         npm install --global npm@11.11.1
-        if ! command -v codex >/dev/null 2>&1 || \
-          ! codex --version | grep -Fq "0.144.5"; then
-          npm install --global @openai/codex@0.144.5
-        fi
+        tool_root="${RUNNER_TEMP}/cib-tooling"
+        npm install --global --prefix "${tool_root}" @openai/codex@0.144.5
+        codex_bin="${tool_root}/bin/codex"
+        test "$("${codex_bin}" --version)" = "codex-cli 0.144.5"
         npm ci
         echo "${GITHUB_ACTION_PATH}/.venv/bin" >> "${GITHUB_PATH}"
         echo "${GITHUB_ACTION_PATH}/node_modules/.bin" >> "${GITHUB_PATH}"
+        echo "${tool_root}/bin" >> "${GITHUB_PATH}"
         echo "CIB_PYTHON=${GITHUB_ACTION_PATH}/.venv/bin/python" >> "${GITHUB_ENV}"
+        echo "CIB_CODEX_BIN=${codex_bin}" >> "${GITHUB_ENV}"
 
     - name: Prepare isolated Codex authentication
       id: auth
@@ -69,13 +74,14 @@ runs:
         auth_path="${auth_dir}/auth.json"
         mkdir -p "${auth_dir}"
         printenv OPENAI_API_KEY | CODEX_HOME="${auth_dir}" \
-          codex login --with-api-key >/dev/null
+          "${CIB_CODEX_BIN}" login --with-api-key >/dev/null
         test -f "${auth_path}"
         chmod 0600 "${auth_path}"
         echo "path=${auth_path}" >> "${GITHUB_OUTPUT}"
 
     - name: Run CIB check
       id: check
+      if: always()
       shell: bash
       working-directory: ${{ github.action_path }}
       env:
@@ -91,24 +97,36 @@ runs:
         cib check "${config_path}" \
           --output-dir "${output_dir}" \
           --auth "${{ steps.auth.outputs.path }}"
-        status=$?
         set -e
-        python - "${output_dir}/check-result.json" "${GITHUB_OUTPUT}" "${status}" <<'PY'
+        python - "${output_dir}/check-result.json" "${GITHUB_OUTPUT}" <<'PY'
         import json
         import pathlib
         import sys
 
         result_path = pathlib.Path(sys.argv[1])
         output_path = pathlib.Path(sys.argv[2])
-        status = int(sys.argv[3])
+        status = 2
         verdict = "invalid"
-        if result_path.is_file():
+        report_path = ""
+        try:
             result = json.loads(result_path.read_text(encoding="utf-8"))
-            verdict = result["verdict"]
-            status = int(result["exit_code"])
+            candidate_verdict = result["verdict"]
+            candidate_status = result["exit_code"]
+            expected_status = {"pass": 0, "fail": 1, "invalid": 2}
+            if (
+                result["schema_version"] == "cib-check-result/1"
+                and type(candidate_status) is int
+                and expected_status.get(candidate_verdict) == candidate_status
+            ):
+                verdict = candidate_verdict
+                status = candidate_status
+                report_path = str(result_path.parent / result["report_html"])
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
         with output_path.open("a", encoding="utf-8") as output:
             output.write(f"verdict={verdict}\n")
             output.write(f"exit-code={status}\n")
+            output.write(f"report-path={report_path}\n")
         PY
 
     - name: Upload safe CIB report
@@ -125,4 +143,10 @@ runs:
     - name: Enforce CIB verdict
       if: always()
       shell: bash
-      run: exit "${{ steps.check.outputs.exit-code }}"
+      env:
+        CIB_EXIT_CODE: ${{ steps.check.outputs.exit-code }}
+      run: |
+        case "${CIB_EXIT_CODE:-2}" in
+          0|1|2) exit "${CIB_EXIT_CODE:-2}" ;;
+          *) exit 2 ;;
+        esac

@@ -5,10 +5,11 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from .contracts import ManifestRow, MaterializedTrial
 from .trials import write_fixture
+from .tasks import TaskCase
 
 
 def read_materialized_manifest(path: Path) -> list[MaterializedTrial]:
@@ -32,7 +33,10 @@ def _fixture_hash(root: Path) -> str:
 
 
 def materialize_run(
-    rows: Iterable[ManifestRow], run_dir: Path, auth_path: Path
+    rows: Iterable[ManifestRow],
+    run_dir: Path,
+    auth_path: Path,
+    cases: Mapping[str, TaskCase] | None = None,
 ) -> list[MaterializedTrial]:
     if not auth_path.exists():
         raise FileNotFoundError(f"Codex auth not found: {auth_path}")
@@ -48,7 +52,7 @@ def materialize_run(
         fixture.mkdir(parents=True)
         home.mkdir()
         codex_home.mkdir()
-        write_fixture(fixture, row.to_spec(), row.nonce)
+        write_fixture(fixture, row.to_spec(), row.nonce, cases)
         subprocess.run(
             ["git", "init", "-q"],
             cwd=fixture,

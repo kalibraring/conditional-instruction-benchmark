@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import shutil
 import subprocess
 import time
@@ -12,6 +14,7 @@ from .materialize import materialize_run
 from .direct_backend import run_direct_suite
 from .promptfoo import export_promptfoo_suite
 from .promptfoo_results import normalize_promptfoo_jsonl
+from .tasks import CASES, TaskCase
 
 
 PROMPTFOO_BEHAVIORAL_FAILURE_EXIT = 100
@@ -53,6 +56,8 @@ def run_promptfoo_study(
     auth_path: Path,
     model: str,
     reasoning_effort: str,
+    timeout_seconds: int = 300,
+    custom_case: TaskCase | None = None,
 ) -> dict[str, Any]:
     if run_dir.exists():
         raise FileExistsError(f"Refusing to reuse run directory: {run_dir}")
@@ -69,9 +74,12 @@ def run_promptfoo_study(
         reasoning_effort=reasoning_effort,
     )
     write_manifest(rows, run_dir)
-    materialized = materialize_run(rows, run_dir, auth_path)
+    cases = dict(CASES)
+    if custom_case is not None:
+        cases[custom_case.case_id] = custom_case
+    materialized = materialize_run(rows, run_dir, auth_path, cases)
     promptfoo_dir = run_dir / "promptfoo"
-    config_path, _ = export_promptfoo_suite(materialized, promptfoo_dir)
+    config_path, _ = export_promptfoo_suite(materialized, promptfoo_dir, cases)
     result_path = promptfoo_dir / "results.jsonl"
     local_binary = project_root / "node_modules" / ".bin" / "promptfoo"
     discovered_binary = shutil.which("promptfoo")
@@ -98,15 +106,37 @@ def run_promptfoo_study(
     }
     execution_path = run_dir / "execution.json"
     execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
-    completed = subprocess.run(command, cwd=project_root, check=False)
+    process = subprocess.Popen(
+        command,
+        cwd=project_root,
+        start_new_session=True,
+    )
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as error:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        execution["finished_at_unix"] = time.time()
+        execution["duration_seconds"] = (
+            execution["finished_at_unix"] - execution["started_at_unix"]
+        )
+        execution["promptfoo_exit_code"] = None
+        execution["timed_out"] = True
+        execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
+        raise RuntimeError("Promptfoo execution timed out") from error
     execution["finished_at_unix"] = time.time()
     execution["duration_seconds"] = (
         execution["finished_at_unix"] - execution["started_at_unix"]
     )
-    execution["promptfoo_exit_code"] = completed.returncode
+    execution["promptfoo_exit_code"] = return_code
+    execution["timed_out"] = False
     execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
-    if completed.returncode not in (0, PROMPTFOO_BEHAVIORAL_FAILURE_EXIT):
-        raise RuntimeError(f"Promptfoo execution failed with exit code {completed.returncode}")
+    if return_code not in (0, PROMPTFOO_BEHAVIORAL_FAILURE_EXIT):
+        raise RuntimeError(f"Promptfoo execution failed with exit code {return_code}")
     if not result_path.exists():
         raise FileNotFoundError(f"Promptfoo did not write results: {result_path}")
 
@@ -135,6 +165,7 @@ def run_direct_study(
     model: str,
     reasoning_effort: str,
     timeout_seconds: int = 300,
+    custom_case: TaskCase | None = None,
 ) -> dict[str, Any]:
     if run_dir.exists():
         raise FileExistsError(f"Refusing to reuse run directory: {run_dir}")
@@ -149,13 +180,17 @@ def run_direct_study(
         target_adapter="direct-codex",
     )
     write_manifest(rows, run_dir)
-    materialized = materialize_run(rows, run_dir, auth_path)
+    cases = dict(CASES)
+    if custom_case is not None:
+        cases[custom_case.case_id] = custom_case
+    materialized = materialize_run(rows, run_dir, auth_path, cases)
     started = time.time()
     audit = run_direct_suite(
         materialized,
         run_dir / "direct",
         jobs=jobs,
         timeout_seconds=timeout_seconds,
+        cases=cases,
     )
     execution = {
         "run_id": run_id,

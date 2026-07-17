@@ -138,7 +138,9 @@ def _study(args: argparse.Namespace) -> int:
     }
     if args.backend == "promptfoo-codex-sdk":
         result = run_promptfoo_study(
-            project_root=Path.cwd(), **common
+            project_root=Path.cwd(),
+            timeout_seconds=getattr(args, "timeout", 300),
+            **common,
         )
     else:
         result = run_direct_study(
@@ -373,6 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     study.add_argument("--replicates", type=int, default=2)
     study.add_argument("--jobs", type=int, default=8)
+    study.add_argument("--timeout", type=int, default=300)
     study.add_argument("--seed", type=int, default=20260714)
     study.add_argument("--model", default="gpt-5.6-sol")
     study.add_argument("--reasoning-effort", default="high")

@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import os
+import pathlib
+import shutil
+import sys
+
+
+arguments = sys.argv[1:]
+if "@openai/codex@0.144.5" in arguments:
+    prefix_index = arguments.index("--prefix") + 1
+    prefix = pathlib.Path(arguments[prefix_index])
+    target = prefix / "bin" / "codex"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source = (
+        pathlib.Path(os.environ["GITHUB_WORKSPACE"])
+        / "tests"
+        / "fixtures"
+        / "action"
+        / "fake-codex"
+    )
+    shutil.copy2(source, target)
+    target.chmod(0o755)
+    raise SystemExit(0)
+
+real_npm = os.environ["CIB_REAL_NPM"]
+os.execv(real_npm, [real_npm, *arguments])
