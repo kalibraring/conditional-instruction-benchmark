@@ -8,6 +8,8 @@ import sys
 
 
 arguments = sys.argv[1:]
+if "npm@11.11.1" in arguments:
+    raise SystemExit(0)
 if "@openai/codex@0.144.5" in arguments:
     prefix_index = arguments.index("--prefix") + 1
     prefix = pathlib.Path(arguments[prefix_index])
