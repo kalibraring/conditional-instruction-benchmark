@@ -30,7 +30,8 @@ protocol running on Promptfoo or another declared execution backend.
 1. `cib doctor` proves the environment without spending model quota.
 2. `cib plan` makes cost and assignments visible before execution.
 3. A six-trial controlled smoke run proves isolation and evidence capture.
-4. The user inspects `study-result.json` and canonical evidence.
+4. `cib report` turns only public and derived evidence into a self-contained
+   scientific summary with explicit claim boundaries.
 5. The user expands cases, placements, and repetitions deliberately.
 
 ## Product principles
@@ -58,6 +59,8 @@ Near-term product success means:
 - a new user reaches a passing six-trial audit from the README;
 - setup failures are diagnosed before model calls;
 - every attempted trial has a durable raw record and canonical envelope;
+- a completed smoke run produces a safe report without exposing protected
+  evidence or requiring knowledge of the internal evidence tree;
 - releases contain no private evidence or workstation-specific state;
 - adapters declare unsupported fields and surfaces;
 - issues distinguish setup, behavioral, protocol, and adapter defects.

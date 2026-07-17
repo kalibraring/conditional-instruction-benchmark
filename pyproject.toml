@@ -1,6 +1,6 @@
 [project]
 name = "conditional-instruction-benchmark"
-version = "0.2.1"
+version = "0.3.0"
 description = "A reproducible multi-backend benchmark for conditional resource-routing instructions in coding agents."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -72,6 +72,23 @@ This smoke design makes six agent calls: three wording arms × two truth states.
 It can consume paid model quota. A successful run writes
 `results/smoke-v1/study-result.json` with `audit.passed: true`.
 
+Create the human-facing report from public and derived evidence only:
+
+```bash
+uv run cib report results/smoke-v1
+```
+
+Success writes:
+
+```text
+results/smoke-v1/report/report.json  sanitized machine-readable report
+results/smoke-v1/report/report.md    portable scientific summary
+results/smoke-v1/report/report.html  self-contained browser report
+```
+
+The six-trial report is an onboarding and evidence-integrity smoke test. It
+does not establish that one wording is generally superior.
+
 Use the direct reference backend when you need a shadow run:
 
 ```bash
@@ -90,6 +107,7 @@ uv run cib study \
 | `cib doctor` | Prove local Python, Node, Codex, Promptfoo, and auth readiness | 0 |
 | `cib plan` | Freeze and inspect a randomized manifest | 0 |
 | `cib study` | Run a new immutable scientific study | Yes |
+| `cib report` | Generate safe JSON, Markdown, and HTML study reports | 0 |
 | `cib capabilities` | Inspect backend evidence and surface declarations | 0 |
 | `cib analyze` | Analyze a completed compatible result directory | 0 |
 
@@ -107,6 +125,7 @@ promptfoo/protected/raw/<id>.json     unsanitized provider archive
 promptfoo/derived/evidence/<id>.json  canonical CIB envelope
 promptfoo/derived/summary.json        canonical scored rows
 promptfoo/derived/audit.json          completeness and disagreement proof
+report/report.{json,md,html}          sanitized human-facing report
 ```
 
 The protected archive is authoritative. Do not commit `results/`: it may contain
@@ -125,6 +144,7 @@ not a new causal finding. See:
 - [sanitized migration evidence](evidence/migration-summary.json);
 - [paper-style migration report](docs/MIGRATION_REPORT.md);
 - [Promptfoo capability research](research/PROMPTFOO_RESEARCH.md).
+- [v0.3.0 reporting contract](docs/V0_3_0_RESEARCH_READY.md).
 
 ## Product and project
 

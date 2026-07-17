@@ -15,6 +15,8 @@ worth returning to.
 - [x] Diagnose prerequisites before model calls with `cib doctor`.
 - [x] Preview trial count and assignments with `cib plan`.
 - [x] Provide one six-call smoke study and name its passing artifact.
+- [x] Generate self-contained JSON, Markdown, and HTML reports from public and
+  derived evidence only.
 - [x] Explain cost and protected-data behavior before execution.
 - [ ] Add a synthetic no-provider demo that renders a complete sample report.
 

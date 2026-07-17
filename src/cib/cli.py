@@ -13,6 +13,7 @@ from .trials import TrialSpec
 from .capabilities import CAPABILITIES
 from .doctor import inspect_environment
 from .manifest import build_manifest, write_manifest
+from .reporting import write_report
 from .workflow import run_direct_study, run_promptfoo_study
 
 
@@ -70,6 +71,12 @@ def _plan(args: argparse.Namespace) -> int:
             indent=2,
         )
     )
+    return 0
+
+
+def _report(args: argparse.Namespace) -> int:
+    result = write_report(args.run_dir, args.output_dir)
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -408,6 +415,13 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--reasoning-effort", default="high")
     plan.add_argument("--output-dir", type=Path, required=True)
     plan.set_defaults(func=_plan)
+    report = subparsers.add_parser(
+        "report",
+        help="Create safe Markdown, HTML, and JSON reports from a completed study",
+    )
+    report.add_argument("run_dir", type=Path)
+    report.add_argument("--output-dir", type=Path)
+    report.set_defaults(func=_report)
     return parser
 
 

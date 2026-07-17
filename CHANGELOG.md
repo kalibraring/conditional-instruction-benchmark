@@ -11,6 +11,16 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.3.0] - 2026-07-17
+
+### Added
+
+- Add `cib report` for deterministic, self-contained JSON, Markdown, and HTML
+  reports with integrity checks, claim boundaries, Wilson intervals, and
+  task-family-weighted descriptive contrasts.
+- Document the v0.3.0 research-ready CLI tracer bullet and complete six-trial
+  onboarding path.
+
 ## [0.2.1] - 2026-07-17
 
 ### Fixed
@@ -41,6 +51,7 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.0

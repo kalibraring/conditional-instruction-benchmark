@@ -141,7 +141,9 @@ def _target_from_raw(raw: dict[str, Any]) -> tuple[bool, bool]:
     return used, marker
 
 
-def _wilson(successes: int, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
+def wilson_interval(
+    successes: int, n: int, z: float = 1.959963984540054
+) -> tuple[float, float]:
     if n == 0:
         return (math.nan, math.nan)
     p = successes / n
@@ -160,7 +162,7 @@ def _cell_summaries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         successes = sum(member["success"] for member in members)
         completed = [member for member in members if member["exit_code"] == 0]
         completed_successes = sum(member["success"] for member in completed)
-        low, high = _wilson(successes, len(members))
+        low, high = wilson_interval(successes, len(members))
         cells.append(
             {
                 "placement": placement,
@@ -198,13 +200,13 @@ def _contrasts(rows: list[dict[str, Any]], samples: int) -> list[dict[str, Any]]
                 if row["placement"] == placement and row["condition_true"] == truth
             ]
             for name, treatment, reference in CONTRASTS:
-                observed = _task_weighted_difference(
+                observed = task_weighted_difference(
                     subset, cases, treatment, reference
                 )
                 draws: list[float] = []
                 for _ in range(samples):
                     sampled = [rng.choice(cases) for _ in cases]
-                    value = _task_weighted_difference(
+                    value = task_weighted_difference(
                         subset, sampled, treatment, reference
                     )
                     if not math.isnan(value):
@@ -224,7 +226,7 @@ def _contrasts(rows: list[dict[str, Any]], samples: int) -> list[dict[str, Any]]
     return output
 
 
-def _task_weighted_difference(
+def task_weighted_difference(
     rows: list[dict[str, Any]],
     cases: Iterable[str],
     treatment: str,

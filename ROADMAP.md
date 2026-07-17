@@ -13,10 +13,13 @@ The roadmap optimizes for trustworthy studies before breadth.
 
 ## v0.3 — safer operations
 
+- Generate safe Markdown, HTML, and JSON reports directly from canonical
+  derived evidence.
 - Add separate recovery manifests and commands.
 - Add an explicitly non-scientific development profile.
 - Record complete backend, retry, latency, token, and version provenance.
-- Generate analysis directly from canonical evidence envelopes.
+- Expand report inference from descriptive smoke summaries to preregistered
+  analysis generated directly from canonical evidence envelopes.
 - Add small committed synthetic fixtures for adapter conformance.
 
 ## v0.4 — portable agent comparison
