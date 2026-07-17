@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -11,6 +12,7 @@ from cib.workflow import (
     derive_study_timeout_seconds,
     promptfoo_command,
     promptfoo_environment,
+    run_direct_study,
     run_promptfoo_study,
 )
 
@@ -208,3 +210,132 @@ def test_derived_study_timeout_covers_all_batches_plus_cleanup_margin() -> None:
     assert derive_study_timeout_seconds(
         trial_count=36, jobs=4, trial_timeout_seconds=300
     ) == 2970
+
+
+def test_direct_backend_records_safe_cache_seed_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    cache = tmp_path / "seed.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "signature": "signed",
+                "signed_payload": {
+                    "account_id": "never-publish",
+                    "chatgpt_user_id": "never-publish",
+                    "bundle": {},
+                    "cached_at": now.isoformat(),
+                    "expires_at": (now + timedelta(hours=1)).isoformat(),
+                    "version": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cib.workflow.run_direct_suite",
+        lambda *args, **kwargs: {
+            "study_timed_out": False,
+            "trial_timeout_count": 0,
+            "passed": True,
+        },
+    )
+
+    outcome = run_direct_study(
+        run_dir=tmp_path / "run",
+        run_id="direct-seed",
+        case_ids=("literal_flag",),
+        placements=("prompt_start",),
+        replicates=1,
+        seed=1,
+        jobs=2,
+        auth_path=auth,
+        model="m",
+        reasoning_effort="medium",
+        cloud_config_seed_path=cache,
+        cloud_config_min_remaining_seconds=600,
+    )
+
+    execution = outcome["execution"]
+    self_contained = json.dumps(execution)
+    assert execution["cloud_config_seed"]["present"] is True
+    assert execution["cloud_config_seed_post_run"]["unchanged"] == 6
+    assert "never-publish" not in self_contained
+
+
+def test_seed_freshness_is_rechecked_before_both_backends_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(timezone.utc)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    cache = tmp_path / "seed.json"
+    cache.write_text(
+        json.dumps(
+            {
+                "signature": "signed",
+                "signed_payload": {
+                    "bundle": {},
+                    "cached_at": now.isoformat(),
+                    "expires_at": (now + timedelta(hours=1)).isoformat(),
+                    "version": 1,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "cib.materialize.CloudConfigSeed.has_minimum_remaining",
+        lambda self, seconds: False,
+    )
+    monkeypatch.setattr(
+        "cib.workflow.run_direct_suite",
+        lambda *args, **kwargs: pytest.fail("direct backend started with stale seed"),
+    )
+    with pytest.raises(ValueError, match="lost its required freshness"):
+        run_direct_study(
+            run_dir=tmp_path / "direct-run",
+            run_id="direct-stale",
+            case_ids=("literal_flag",),
+            placements=("prompt_start",),
+            replicates=1,
+            seed=1,
+            jobs=2,
+            auth_path=auth,
+            model="m",
+            reasoning_effort="medium",
+            cloud_config_seed_path=cache,
+            cloud_config_min_remaining_seconds=600,
+        )
+
+    project_root = tmp_path / "project"
+    binary = project_root / "node_modules" / ".bin" / "promptfoo"
+    binary.parent.mkdir(parents=True)
+    binary.write_text("placeholder", encoding="utf-8")
+    real_popen = subprocess.Popen
+
+    def guarded_popen(command, *args, **kwargs):
+        if command and command[0] == str(binary.resolve()):
+            pytest.fail("Promptfoo started with stale seed")
+        return real_popen(command, *args, **kwargs)
+
+    monkeypatch.setattr("cib.workflow.subprocess.Popen", guarded_popen)
+    with pytest.raises(ValueError, match="lost its required freshness"):
+        run_promptfoo_study(
+            project_root=project_root,
+            run_dir=tmp_path / "promptfoo-run",
+            run_id="promptfoo-stale",
+            case_ids=("literal_flag",),
+            placements=("prompt_start",),
+            replicates=1,
+            seed=1,
+            jobs=2,
+            auth_path=auth,
+            model="m",
+            reasoning_effort="medium",
+            cloud_config_seed_path=cache,
+            cloud_config_min_remaining_seconds=600,
+        )

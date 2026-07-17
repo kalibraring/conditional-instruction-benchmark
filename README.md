@@ -125,7 +125,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kalibraring/conditional-instruction-benchmark@v0.5.1
+      - uses: kalibraring/conditional-instruction-benchmark@v0.5.2
         with:
           config: cib.yaml
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -165,6 +165,22 @@ uv run cib study \
   --study-timeout-seconds 960
 uv run cib report results/smoke-v1
 ```
+
+For large scientific runs, CIB can privately copy one fresh signed-format Codex
+cloud-config cache snapshot into every isolated trial. CIB never publishes the
+payload; it records only safe freshness and digest metadata:
+
+```bash
+uv run cib study \
+  --run-id frozen-study \
+  --cloud-config-seed /private/bootstrap/cloud-config-bundle-cache.json \
+  --cloud-config-min-validity-seconds 3300 \
+  --trial-timeout-seconds 600 \
+  --study-timeout-seconds 3300
+```
+
+Read [the v0.5.2 evidence-recovery contract](docs/V0_5_2_EVIDENCE_RECOVERY.md)
+before interpreting transport errors or recovered timeout assignments.
 
 The six-trial report is an onboarding and evidence-integrity smoke test. It
 does not establish that one wording is generally superior.
@@ -228,6 +244,7 @@ not a new causal finding. See:
 - [v0.3.0 reporting contract](docs/V0_3_0_RESEARCH_READY.md).
 - [v0.4.0 one-command product contract](docs/V0_4_0_PRODUCT_WEDGE.md).
 - [v0.5.0 timeout and migration contract](docs/V0_5_0_TIMEOUTS.md).
+- [v0.5.2 evidence recovery and private cache seeding](docs/V0_5_2_EVIDENCE_RECOVERY.md).
 
 ## Product and project
 

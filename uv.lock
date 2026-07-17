@@ -17,7 +17,7 @@ wheels = [
 
 [[package]]
 name = "conditional-instruction-benchmark"
-version = "0.5.1"
+version = "0.5.2"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },

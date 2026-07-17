@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -12,7 +13,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .manifest import build_manifest, write_manifest
-from .materialize import materialize_run
+from .materialize import (
+    CLOUD_CONFIG_CACHE,
+    load_cloud_config_seed,
+    materialize_run,
+    private_snapshot_sha256,
+)
 from .direct_backend import run_direct_suite
 from .promptfoo import export_promptfoo_suite
 from .promptfoo_results import (
@@ -70,6 +76,21 @@ def promptfoo_environment(run_dir: Path) -> dict[str, str]:
     return environment
 
 
+def _cloud_config_post_run(
+    materialized: Iterable[Any], seed_sha256: str
+) -> dict[str, int]:
+    digests = [
+        private_snapshot_sha256(Path(trial.codex_home) / CLOUD_CONFIG_CACHE)
+        for trial in materialized
+    ]
+    return {
+        "trial_copies": len(digests),
+        "unchanged": sum(digest == seed_sha256 for digest in digests),
+        "changed": sum(digest not in (None, seed_sha256) for digest in digests),
+        "missing": sum(digest is None for digest in digests),
+    }
+
+
 def run_promptfoo_study(
     *,
     project_root: Path,
@@ -85,11 +106,18 @@ def run_promptfoo_study(
     reasoning_effort: str,
     trial_timeout_seconds: int | None = 300,
     study_timeout_seconds: int | None = None,
+    cloud_config_seed_path: Path | None = None,
+    cloud_config_min_remaining_seconds: int | None = None,
     timeout_source: str = "derived_api",
     custom_case: TaskCase | None = None,
 ) -> dict[str, Any]:
     if run_dir.exists():
         raise FileExistsError(f"Refusing to reuse run directory: {run_dir}")
+    if (
+        cloud_config_min_remaining_seconds is not None
+        and cloud_config_seed_path is None
+    ):
+        raise ValueError("Cloud config minimum validity requires an explicit seed")
     if jobs < 1:
         raise ValueError("jobs must be positive")
     if trial_timeout_seconds is not None and trial_timeout_seconds < 1:
@@ -122,9 +150,27 @@ def run_promptfoo_study(
     cases = dict(CASES)
     if custom_case is not None:
         cases[custom_case.case_id] = custom_case
-    materialized = materialize_run(rows, run_dir, auth_path, cases)
+    cache_minimum = (
+        cloud_config_min_remaining_seconds
+        if cloud_config_min_remaining_seconds is not None
+        else (trial_timeout_seconds or 0) + 300
+    )
+    cloud_config_seed = (
+        load_cloud_config_seed(
+            auth_path,
+            source_path=cloud_config_seed_path,
+            minimum_remaining_seconds=cache_minimum,
+        )
+        if cloud_config_seed_path is not None
+        else None
+    )
+    if cloud_config_seed_path is not None and cloud_config_seed is None:
+        raise ValueError("Explicit cloud config seed is not fresh enough")
+    materialized = materialize_run(
+        rows, run_dir, auth_path, cases, cloud_config_seed=cloud_config_seed
+    )
     promptfoo_dir = run_dir / "promptfoo"
-    config_path, _ = export_promptfoo_suite(
+    config_path, tests_path = export_promptfoo_suite(
         materialized,
         promptfoo_dir,
         cases,
@@ -134,6 +180,10 @@ def run_promptfoo_study(
         ),
     )
     result_path = promptfoo_dir / "results.jsonl"
+    suite_hashes = {
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "tests_sha256": hashlib.sha256(tests_path.read_bytes()).hexdigest(),
+    }
     local_binary = project_root / "node_modules" / ".bin" / "promptfoo"
     discovered_binary = shutil.which("promptfoo")
     binary = local_binary if local_binary.exists() else (
@@ -172,9 +222,24 @@ def run_promptfoo_study(
         "state_isolation": {
             "promptfoo_config_dir": "per_run",
         },
+        "cloud_config_seed": (
+            {**cloud_config_seed.to_safe_dict(), "minimum_remaining_seconds": cache_minimum}
+            if cloud_config_seed is not None
+            else {
+                "present": False,
+                "mode": "network_bootstrap",
+                "minimum_remaining_seconds": cache_minimum,
+            }
+        ),
+        "frozen_suite": suite_hashes,
     }
     execution_path = run_dir / "execution.json"
     execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
+    if (
+        cloud_config_seed is not None
+        and not cloud_config_seed.has_minimum_remaining(cache_minimum)
+    ):
+        raise ValueError("Cloud config seed lost its required freshness during setup")
     process = subprocess.Popen(
         command,
         cwd=project_root,
@@ -219,10 +284,24 @@ def run_promptfoo_study(
         if not result_path.exists():
             raise FileNotFoundError(f"Promptfoo did not write results: {result_path}")
 
+    final_suite_hashes = {
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "tests_sha256": hashlib.sha256(tests_path.read_bytes()).hexdigest(),
+    }
+    execution["frozen_suite_unchanged"] = final_suite_hashes == suite_hashes
+    if not execution["frozen_suite_unchanged"]:
+        execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
+        raise RuntimeError("Promptfoo frozen suite changed during execution")
+    if cloud_config_seed is not None:
+        execution["cloud_config_seed_post_run"] = _cloud_config_post_run(
+            materialized, cloud_config_seed.sha256
+        )
     audit = normalize_promptfoo_jsonl(
         result_path,
         promptfoo_dir / "derived",
         promptfoo_dir / "protected" / "raw",
+        tests_path=tests_path,
+        expected_tests_sha256=suite_hashes["tests_sha256"],
     )
     if outer_watchdog_timed_out:
         execution["timeout_scope"] = "outer_watchdog"
@@ -286,11 +365,18 @@ def run_direct_study(
     reasoning_effort: str,
     trial_timeout_seconds: int | None = 300,
     study_timeout_seconds: int | None = None,
+    cloud_config_seed_path: Path | None = None,
+    cloud_config_min_remaining_seconds: int | None = None,
     timeout_source: str = "derived_api",
     custom_case: TaskCase | None = None,
 ) -> dict[str, Any]:
     if run_dir.exists():
         raise FileExistsError(f"Refusing to reuse run directory: {run_dir}")
+    if (
+        cloud_config_min_remaining_seconds is not None
+        and cloud_config_seed_path is None
+    ):
+        raise ValueError("Cloud config minimum validity requires an explicit seed")
     rows = build_manifest(
         run_id=run_id,
         case_ids=tuple(case_ids),
@@ -305,7 +391,25 @@ def run_direct_study(
     cases = dict(CASES)
     if custom_case is not None:
         cases[custom_case.case_id] = custom_case
-    materialized = materialize_run(rows, run_dir, auth_path, cases)
+    cache_minimum = (
+        cloud_config_min_remaining_seconds
+        if cloud_config_min_remaining_seconds is not None
+        else (trial_timeout_seconds or 0) + 300
+    )
+    cloud_config_seed = (
+        load_cloud_config_seed(
+            auth_path,
+            source_path=cloud_config_seed_path,
+            minimum_remaining_seconds=cache_minimum,
+        )
+        if cloud_config_seed_path is not None
+        else None
+    )
+    if cloud_config_seed_path is not None and cloud_config_seed is None:
+        raise ValueError("Explicit cloud config seed is not fresh enough")
+    materialized = materialize_run(
+        rows, run_dir, auth_path, cases, cloud_config_seed=cloud_config_seed
+    )
     started = time.time()
     if trial_timeout_seconds is None:
         raise ValueError("Direct Codex requires a per-trial timeout")
@@ -318,6 +422,11 @@ def run_direct_study(
             jobs=jobs,
             trial_timeout_seconds=trial_timeout_seconds,
         )
+    if (
+        cloud_config_seed is not None
+        and not cloud_config_seed.has_minimum_remaining(cache_minimum)
+    ):
+        raise ValueError("Cloud config seed lost its required freshness during setup")
     audit = run_direct_suite(
         materialized,
         run_dir / "direct",
@@ -348,7 +457,20 @@ def run_direct_study(
         "timeout_occurred": bool(
             audit.get("study_timed_out") or audit.get("trial_timeout_count")
         ),
+        "cloud_config_seed": (
+            {**cloud_config_seed.to_safe_dict(), "minimum_remaining_seconds": cache_minimum}
+            if cloud_config_seed is not None
+            else {
+                "present": False,
+                "mode": "network_bootstrap",
+                "minimum_remaining_seconds": cache_minimum,
+            }
+        ),
     }
+    if cloud_config_seed is not None:
+        execution["cloud_config_seed_post_run"] = _cloud_config_post_run(
+            materialized, cloud_config_seed.sha256
+        )
     execution["duration_seconds"] = (
         execution["finished_at_unix"] - execution["started_at_unix"]
     )

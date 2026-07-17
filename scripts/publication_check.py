@@ -44,7 +44,7 @@ PATTERNS = {
 def _tracked_files(root: Path) -> Iterable[Path]:
     if (root / ".git").exists():
         completed = subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root,
             check=True,
             capture_output=True,

@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from scripts.publication_check import scan
@@ -31,4 +32,15 @@ def test_publication_check_rejects_private_check_config(tmp_path: Path) -> None:
             "path": "check-config.private.yaml",
             "reason": "forbidden file type",
         }
+    ]
+
+
+def test_publication_check_scans_untracked_files_in_git_repo(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "new-secret.txt").write_text(
+        "sk-" + "x" * 24 + "\n", encoding="utf-8"
+    )
+
+    assert scan(tmp_path) == [
+        {"path": "new-secret.txt", "reason": "OpenAI-style secret"}
     ]

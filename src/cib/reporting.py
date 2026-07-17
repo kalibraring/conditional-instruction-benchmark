@@ -458,13 +458,25 @@ def _recompute_integrity(
         for summary_row in summary:
             _require_boolean(summary_row, "promptfoo_success")
         session_ids = [row.get("session_id") for row in summary]
+        observed_session_ids = [session_id for session_id in session_ids if session_id]
         unique_session_ids = len(
-            {session_id for session_id in session_ids if session_id}
+            set(observed_session_ids)
         )
-        timeout_affected_ids = set(
-            timeout_integrity["timeout_affected_trial_ids"]
+        duplicate_session_ids = len(observed_session_ids) - unique_session_ids
+        missing_required_session_ids = sorted(
+            str(row["trial_id"])
+            for row in summary
+            if not row["harness_failure"] and not row.get("session_id")
         )
-        expected_session_ids = len(rows) - len(timeout_affected_ids)
+        sessionless_unclassified_harness_ids = sorted(
+            str(row["trial_id"])
+            for row in summary
+            if row["harness_failure"]
+            and not row.get("session_id")
+            and row.get("failure_class") not in {
+                "pre_session_transport", "per_trial_timeout", "study_timeout"
+            }
+        )
         scorer_disagreements = sum(
             row["promptfoo_success"] != row["behavioral_success"]
             for row in summary
@@ -477,18 +489,63 @@ def _recompute_integrity(
             raise ReportValidationError(
                 "Audit scorer disagreements disagree with derived summary"
             )
-        backend_passed = all(
-            (
-                _audit_int(audit, "duplicate_trial_ids") == 0,
-                _audit_int(audit, "protected_raw_files") == len(rows),
-                _audit_int(audit, "protected_source_rows") == len(rows),
-                unique_session_ids == expected_session_ids,
-                not _audit_list(audit, "missing_protected_raw"),
-                not _audit_list(audit, "unexpected_protected_raw"),
-                scorer_disagreements == 0,
-                not identity_disagreements,
+        modern_audit = "duplicate_session_ids" in audit
+        if modern_audit:
+            if _audit_int(audit, "duplicate_session_ids") != duplicate_session_ids:
+                raise ReportValidationError(
+                    "Audit duplicate session count disagrees with derived summary"
+                )
+            if _audit_list(audit, "missing_required_session_trial_ids") != missing_required_session_ids:
+                raise ReportValidationError(
+                    "Audit required-session failures disagree with derived summary"
+                )
+            if _audit_list(
+                audit, "sessionless_unclassified_harness_trial_ids"
+            ) != sessionless_unclassified_harness_ids:
+                raise ReportValidationError(
+                    "Audit unclassified sessionless failures disagree with summary"
+                )
+            recovered_ids = set(_audit_list(audit, "ledger_recovered_trial_ids"))
+            missing_raw = set(_audit_list(audit, "missing_protected_raw"))
+            backend_passed = all(
+                (
+                    _audit_int(audit, "duplicate_trial_ids") == 0,
+                    _audit_int(audit, "protected_raw_files")
+                    + _audit_int(audit, "ledger_recovered_source_rows")
+                    == len(rows),
+                    _audit_int(audit, "protected_source_rows")
+                    + _audit_int(audit, "ledger_recovered_source_rows")
+                    == len(rows),
+                    missing_raw == recovered_ids,
+                    duplicate_session_ids == 0,
+                    not missing_required_session_ids,
+                    not sessionless_unclassified_harness_ids,
+                    not _audit_list(audit, "unexpected_protected_raw"),
+                    not _audit_int(audit, "duplicate_test_indices"),
+                    not _audit_list(audit, "missing_test_indices"),
+                    not _audit_list(audit, "unexpected_test_indices"),
+                    not _audit_list(audit, "test_index_disagreements"),
+                    scorer_disagreements == 0,
+                    not identity_disagreements,
+                )
             )
-        )
+        else:
+            timeout_affected_ids = set(
+                timeout_integrity["timeout_affected_trial_ids"]
+            )
+            expected_session_ids = len(rows) - len(timeout_affected_ids)
+            backend_passed = all(
+                (
+                    _audit_int(audit, "duplicate_trial_ids") == 0,
+                    _audit_int(audit, "protected_raw_files") == len(rows),
+                    _audit_int(audit, "protected_source_rows") == len(rows),
+                    unique_session_ids == expected_session_ids,
+                    not _audit_list(audit, "missing_protected_raw"),
+                    not _audit_list(audit, "unexpected_protected_raw"),
+                    scorer_disagreements == 0,
+                    not identity_disagreements,
+                )
+            )
     elif backend == "direct-codex":
         scorer_disagreements = 0
         identity_disagreements = []

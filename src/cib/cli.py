@@ -138,6 +138,24 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _study(args: argparse.Namespace) -> int:
+    if (
+        args.cloud_config_min_validity_seconds is not None
+        and args.cloud_config_min_validity_seconds < 0
+    ):
+        print(
+            "error: --cloud-config-min-validity-seconds cannot be negative",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        args.cloud_config_min_validity_seconds is not None
+        and args.cloud_config_seed is None
+    ):
+        print(
+            "error: --cloud-config-min-validity-seconds requires --cloud-config-seed",
+            file=sys.stderr,
+        )
+        return 2
     timeout_values = {
         "--timeout": args.timeout,
         "--trial-timeout-seconds": args.trial_timeout_seconds,
@@ -179,6 +197,8 @@ def _study(args: argparse.Namespace) -> int:
         "seed": args.seed,
         "jobs": args.jobs,
         "auth_path": args.auth,
+        "cloud_config_seed_path": args.cloud_config_seed,
+        "cloud_config_min_remaining_seconds": args.cloud_config_min_validity_seconds,
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
     }
@@ -458,6 +478,12 @@ def build_parser() -> argparse.ArgumentParser:
     study.add_argument("--model", default="gpt-5.6-sol")
     study.add_argument("--reasoning-effort", default="high")
     study.add_argument("--auth", type=Path, default=Path.home() / ".codex" / "auth.json")
+    study.add_argument(
+        "--cloud-config-seed",
+        type=Path,
+        help="Private signed-format Codex cloud-config cache snapshot to copy per trial",
+    )
+    study.add_argument("--cloud-config-min-validity-seconds", type=int)
     study.add_argument("--output-dir", type=Path)
     study.set_defaults(func=_promptfoo_study)
     generic_study = subparsers.add_parser(
@@ -490,6 +516,12 @@ def build_parser() -> argparse.ArgumentParser:
     generic_study.add_argument(
         "--auth", type=Path, default=Path.home() / ".codex" / "auth.json"
     )
+    generic_study.add_argument(
+        "--cloud-config-seed",
+        type=Path,
+        help="Private signed-format Codex cloud-config cache snapshot to copy per trial",
+    )
+    generic_study.add_argument("--cloud-config-min-validity-seconds", type=int)
     generic_study.add_argument("--output-dir", type=Path)
     generic_study.set_defaults(func=_study)
     capabilities = subparsers.add_parser(

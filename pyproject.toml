@@ -1,6 +1,6 @@
 [project]
 name = "conditional-instruction-benchmark"
-version = "0.5.1"
+version = "0.5.2"
 description = "Evidence-backed CI that proves whether coding agents use designated resources when instructed."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -7,7 +7,7 @@ authors:
     given-names: Mohamad
 repository-code: "https://github.com/kalibraring/conditional-instruction-benchmark"
 url: "https://github.com/kalibraring/conditional-instruction-benchmark"
-version: 0.5.1
+version: 0.5.2
 date-released: 2026-07-18
 license: MIT
 keywords:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable
@@ -15,6 +16,8 @@ STUDY_ABORT_FRAGMENTS = (
     "OpenAI Codex SDK call aborted",
     "OpenAI Codex SDK call aborted before it started",
 )
+PRE_SESSION_CLOUD_CONFIG_FRAGMENT = "timed out waiting for cloud config bundle after "
+REDACTED = "[REDACTED]"
 
 
 def _timeout_scope(row: dict[str, Any]) -> str | None:
@@ -112,6 +115,9 @@ def normalize_promptfoo_jsonl(
     result_path: Path,
     output_dir: Path,
     protected_raw_dir: Path | None = None,
+    *,
+    tests_path: Path | None = None,
+    expected_tests_sha256: str | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir = output_dir / "evidence"
@@ -121,6 +127,20 @@ def normalize_promptfoo_jsonl(
         for line in result_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    frozen_tests: list[dict[str, Any]] | None = None
+    ledger_sha256: str | None = None
+    if tests_path is not None:
+        if expected_tests_sha256 is None:
+            raise ValueError("Frozen Promptfoo tests ledger requires its pre-run digest")
+        tests_bytes = tests_path.read_bytes()
+        ledger_sha256 = hashlib.sha256(tests_bytes).hexdigest()
+        if ledger_sha256 != expected_tests_sha256:
+            raise ValueError("Frozen Promptfoo tests ledger digest changed")
+        frozen_tests = [
+            json.loads(line)
+            for line in tests_bytes.decode("utf-8").splitlines()
+            if line.strip()
+        ]
     summary_rows: list[dict[str, Any]] = []
     ids: list[str] = []
     promptfoo_disagreements: list[dict[str, Any]] = []
@@ -128,24 +148,77 @@ def normalize_promptfoo_jsonl(
     trial_timeout_trial_ids: list[str] = []
     study_timeout_trial_ids: list[str] = []
     protected_source_rows = 0
+    ledger_recovered_source_rows = 0
+    ledger_recovered_trial_ids: list[str] = []
+    test_indices: list[int] = []
+    test_index_disagreements: list[dict[str, Any]] = []
     for row in result_rows:
         row_metadata = row.get("metadata") or row.get("testCase", {}).get("metadata") or {}
         stable_trial_id = row_metadata.get("trial_id")
         timeout_scope = _timeout_scope(row)
+        frozen_test: dict[str, Any] | None = None
+        frozen_manifest: ManifestRow | None = None
+        redacted_identity = False
+        if frozen_tests is not None:
+            test_index = row.get("testIdx")
+            if type(test_index) is not int or not (0 <= test_index < len(frozen_tests)):
+                test_index_disagreements.append(
+                    {"testIdx": test_index, "reason": "not an exact in-range integer"}
+                )
+            else:
+                test_indices.append(test_index)
+                frozen_test = frozen_tests[test_index]
+                frozen_variables = frozen_test.get("vars") or {}
+                frozen_manifest = ManifestRow.from_dict(frozen_variables["cib_manifest"])
+                frozen_description = frozen_test.get("description")
+                frozen_random_order = frozen_manifest.random_order
+                if frozen_description != frozen_manifest.trial_id or frozen_random_order != test_index:
+                    test_index_disagreements.append(
+                        {
+                            "testIdx": test_index,
+                            "reason": "ledger description/random_order mismatch",
+                        }
+                    )
+                if stable_trial_id not in (None, "", REDACTED) and stable_trial_id != frozen_manifest.trial_id:
+                    test_index_disagreements.append(
+                        {
+                            "testIdx": test_index,
+                            "reason": "result metadata disagrees with ledger",
+                        }
+                    )
+                row_manifest = (row.get("vars") or {}).get("cib_manifest") or {}
+                for field in (
+                    "run_id", "block_id", "random_order", "arm", "condition_true",
+                    "case_id", "case_variant", "placement", "model",
+                    "reasoning_effort", "target_adapter", "nonce",
+                ):
+                    observed = row_manifest.get(field)
+                    expected = frozen_variables["cib_manifest"].get(field)
+                    if observed not in (None, REDACTED) and observed != expected:
+                        test_index_disagreements.append(
+                            {
+                                "testIdx": test_index,
+                                "reason": f"result {field} disagrees with ledger",
+                            }
+                        )
+                        break
+                # Promptfoo may redact the private manifest copy in result vars
+                # while retaining the public trial id in metadata. Recovery is
+                # needed only when the stable public identity is also absent.
+                redacted_identity = stable_trial_id in (None, "", REDACTED)
+                if redacted_identity:
+                    if timeout_scope != "trial":
+                        test_index_disagreements.append(
+                            {
+                                "testIdx": test_index,
+                                "reason": "only a trial timeout may recover redacted identity",
+                            }
+                        )
+                    else:
+                        stable_trial_id = frozen_manifest.trial_id
         protected = None
         if protected_raw_dir and stable_trial_id:
             protected_path = protected_raw_dir / f"{stable_trial_id}.json"
-            if timeout_scope and not protected_path.exists():
-                protected_test = dict(row.get("testCase") or {})
-                protected_test.setdefault("vars", row.get("vars") or {})
-                protected_test.setdefault("metadata", row_metadata)
-                protected_path.write_text(
-                    json.dumps(
-                        {"test": protected_test, "result": row},
-                        indent=2,
-                    ),
-                    encoding="utf-8",
-                )
             if protected_path.exists():
                 protected = json.loads(protected_path.read_text(encoding="utf-8"))
         if protected:
@@ -155,11 +228,30 @@ def normalize_promptfoo_jsonl(
             protected_result = protected.get("result") or {}
             provider_response = protected_result.get("response") or {}
             promptfoo_success = bool(protected_result.get("success", False))
+        elif frozen_test is not None and timeout_scope == "trial" and stable_trial_id:
+            ledger_recovered_source_rows += 1
+            ledger_recovered_trial_ids.append(str(stable_trial_id))
+            variables = frozen_test.get("vars") or {}
+            provider_response = row.get("response") or {}
+            promptfoo_success = bool(row.get("success", False))
+        elif frozen_test is not None and redacted_identity:
+            # Use the frozen assignment only to keep normalization total. The
+            # disagreement and absent source evidence still make this run invalid.
+            variables = frozen_test.get("vars") or {}
+            provider_response = row.get("response") or {}
+            promptfoo_success = bool(row.get("success", False))
         else:
             variables = row.get("vars") or row.get("testCase", {}).get("vars") or {}
             provider_response = row.get("response") or {}
             promptfoo_success = bool(row.get("success", False))
         manifest = ManifestRow.from_dict(variables["cib_manifest"])
+        if frozen_manifest is not None and manifest != frozen_manifest:
+            test_index_disagreements.append(
+                {
+                    "testIdx": row.get("testIdx"),
+                    "reason": "scored manifest disagrees with frozen ledger",
+                }
+            )
         if stable_trial_id and stable_trial_id != manifest.trial_id:
             archive_identity_disagreements.append(
                 {
@@ -169,8 +261,11 @@ def normalize_promptfoo_jsonl(
             )
         if (
             row.get("error")
-            and not provider_response
-            and not row.get("gradingResult")
+            and not provider_response.get("error")
+            and (
+                timeout_scope in {"trial", "study"}
+                or (not provider_response and not row.get("gradingResult"))
+            )
         ):
             provider_response = {**provider_response, "error": row["error"]}
         scored = score_envelope(normalize_promptfoo_response(provider_response, manifest))
@@ -183,6 +278,31 @@ def normalize_promptfoo_jsonl(
         evidence_path = evidence_dir / f"{trial_id}.json"
         evidence_path.write_text(json.dumps(scored, indent=2), encoding="utf-8")
         cib_success = bool(scored["outcome"]["behavioral_success"])
+        combined_error = "\n".join(
+            str(value)
+            for value in (
+                row.get("error"),
+                (row.get("response") or {}).get("error")
+                if isinstance(row.get("response"), dict)
+                else None,
+            )
+            if value
+        )
+        if timeout_scope == "trial":
+            failure_class = "per_trial_timeout"
+        elif timeout_scope == "study":
+            failure_class = "study_timeout"
+        elif (
+            PRE_SESSION_CLOUD_CONFIG_FRAGMENT in combined_error
+            and scored["outcome"]["harness_failure"]
+            and not scored["response"].get("session_id")
+            and not any(scored["observation"].values())
+        ):
+            failure_class = "pre_session_transport"
+        elif scored["outcome"]["harness_failure"]:
+            failure_class = "unclassified_harness_error"
+        else:
+            failure_class = None
         if promptfoo_success != cib_success:
             promptfoo_disagreements.append(
                 {
@@ -205,6 +325,12 @@ def normalize_promptfoo_jsonl(
                 **scored["outcome"],
                 "session_id": scored["response"].get("session_id"),
                 "timeout_scope": timeout_scope,
+                "failure_class": failure_class,
+                "evidence_source": (
+                    "protected_archive" if protected else (
+                        "frozen_tests_ledger" if frozen_test is not None and timeout_scope == "trial" else "result_jsonl"
+                    )
+                ),
             }
         )
     summary_rows.sort(key=lambda item: item["random_order"])
@@ -212,25 +338,55 @@ def normalize_promptfoo_jsonl(
         json.dumps(summary_rows, indent=2), encoding="utf-8"
     )
     unique_ids = set(ids)
-    raw_ids = (
+    all_raw_ids = (
         {path.stem for path in protected_raw_dir.glob("*.json")}
         if protected_raw_dir and protected_raw_dir.exists()
         else set()
     )
+    ignored_reserved_raw_ids = sorted(all_raw_ids.intersection({REDACTED}))
+    raw_ids = all_raw_ids.difference({REDACTED})
     sessions = [row["session_id"] for row in summary_rows if row["session_id"]]
     timeout_affected_trial_ids = sorted(
         set(trial_timeout_trial_ids) | set(study_timeout_trial_ids)
     )
-    expected_session_count = len(result_rows) - len(timeout_affected_trial_ids)
+    missing_required_session_trial_ids = sorted(
+        str(row["trial_id"])
+        for row in summary_rows
+        if not row["harness_failure"] and not row["session_id"]
+    )
+    sessionless_unclassified_harness_trial_ids = sorted(
+        str(row["trial_id"])
+        for row in summary_rows
+        if row["harness_failure"]
+        and not row["session_id"]
+        and row["failure_class"] not in {
+            "pre_session_transport", "per_trial_timeout", "study_timeout"
+        }
+    )
+    duplicate_session_ids = len(sessions) - len(set(sessions))
+    recovered_ids = set(ledger_recovered_trial_ids)
+    indexed = set(test_indices)
+    expected_indices = set(range(len(frozen_tests or [])))
     audit = {
         "result_rows": len(result_rows),
         "unique_trial_ids": len(unique_ids),
         "duplicate_trial_ids": len(ids) - len(unique_ids),
         "protected_raw_files": len(raw_ids),
         "protected_source_rows": protected_source_rows,
+        "ledger_recovered_source_rows": ledger_recovered_source_rows,
+        "ledger_recovered_trial_ids": sorted(ledger_recovered_trial_ids),
+        "frozen_tests_sha256": ledger_sha256,
         "missing_protected_raw": sorted(unique_ids - raw_ids),
         "unexpected_protected_raw": sorted(raw_ids - unique_ids),
+        "ignored_reserved_protected_raw": ignored_reserved_raw_ids,
         "unique_session_ids": len(set(sessions)),
+        "duplicate_session_ids": duplicate_session_ids,
+        "missing_required_session_trial_ids": missing_required_session_trial_ids,
+        "sessionless_unclassified_harness_trial_ids": sessionless_unclassified_harness_trial_ids,
+        "duplicate_test_indices": len(test_indices) - len(indexed),
+        "missing_test_indices": sorted(expected_indices - indexed),
+        "unexpected_test_indices": sorted(indexed - expected_indices),
+        "test_index_disagreements": test_index_disagreements,
         "behavioral_successes": sum(row["behavioral_success"] for row in summary_rows),
         "harness_failures": sum(row["harness_failure"] for row in summary_rows),
         "promptfoo_cib_disagreements": promptfoo_disagreements,
@@ -245,12 +401,21 @@ def normalize_promptfoo_jsonl(
     audit["passed"] = bool(result_rows) and all(
         (
             audit["duplicate_trial_ids"] == 0,
-            not audit["missing_protected_raw"],
+            set(audit["missing_protected_raw"]) == recovered_ids,
             not audit["unexpected_protected_raw"],
-            audit["unique_session_ids"] == expected_session_count,
+            audit["duplicate_session_ids"] == 0,
+            not audit["missing_required_session_trial_ids"],
+            not audit["sessionless_unclassified_harness_trial_ids"],
             not promptfoo_disagreements,
             not archive_identity_disagreements,
-            (not protected_raw_dir or protected_source_rows == len(result_rows)),
+            (
+                not protected_raw_dir
+                or protected_source_rows + ledger_recovered_source_rows == len(result_rows)
+            ),
+            not audit["duplicate_test_indices"],
+            not audit["missing_test_indices"],
+            not audit["unexpected_test_indices"],
+            not audit["test_index_disagreements"],
             not audit["study_timed_out"],
         )
     )
