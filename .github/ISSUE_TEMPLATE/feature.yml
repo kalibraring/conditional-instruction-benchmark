@@ -1,0 +1,24 @@
+name: Product proposal
+description: Propose a user-facing workflow or product improvement.
+title: "[Product]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: user
+    attributes:
+      label: User and problem
+      description: Who needs this, and what decision or workflow is blocked?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable success rather than a preferred implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: tradeoffs
+    attributes:
+      label: Cost, privacy, and compatibility
+      description: What could become slower, riskier, or incompatible?

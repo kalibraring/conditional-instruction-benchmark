@@ -1,0 +1,33 @@
+name: Protocol or research proposal
+description: Propose a change to treatments, cases, scoring, inference, or claims.
+title: "[Protocol]: "
+labels: [research]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Research question
+      description: State the estimand or scientific decision precisely.
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Competing hypotheses
+      description: What outcomes would distinguish them?
+    validations:
+      required: true
+  - type: textarea
+    id: validity
+    attributes:
+      label: Validity and compatibility
+      description: Explain confounds, missingness, power, schema, and historical comparability.
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: Smallest discriminating test
+      description: Name the narrowest evidence that should precede a broad run.
+    validations:
+      required: true

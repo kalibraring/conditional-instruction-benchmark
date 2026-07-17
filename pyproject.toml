@@ -1,0 +1,85 @@
+[project]
+name = "conditional-instruction-benchmark"
+version = "0.2.0"
+description = "A reproducible multi-backend benchmark for conditional resource-routing instructions in coding agents."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Mohamad Kamar" }]
+keywords = [
+  "ai-agents",
+  "benchmark",
+  "codex",
+  "evaluation",
+  "promptfoo",
+  "prompt-engineering",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/kalibraring/conditional-instruction-benchmark"
+Documentation = "https://github.com/kalibraring/conditional-instruction-benchmark#readme"
+Issues = "https://github.com/kalibraring/conditional-instruction-benchmark/issues"
+Changelog = "https://github.com/kalibraring/conditional-instruction-benchmark/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+analysis = ["matplotlib>=3.8"]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+cib = "cib.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cib"]
+
+[tool.hatch.build]
+exclude = ["/results", "/node_modules", "/.venv", "/dist"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/architecture",
+  "/docs",
+  "/evidence",
+  "/protocol",
+  "/research",
+  "/scripts",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/CITATION.cff",
+  "/CODE_OF_CONDUCT.md",
+  "/CONTRIBUTING.md",
+  "/GOVERNANCE.md",
+  "/LICENSE",
+  "/ROADMAP.md",
+  "/SECURITY.md",
+  "/SUPPORT.md",
+  "/pyproject.toml",
+  "/package.json",
+  "/package-lock.json",
+  "/uv.lock",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["results", "node_modules", ".venv"]

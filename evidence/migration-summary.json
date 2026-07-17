@@ -1,0 +1,35 @@
+{
+  "schema_version": "cib-migration-summary/1",
+  "date": "2026-07-14",
+  "purpose": "Execution and evidence parity validation; not a new causal result",
+  "archive_parity": {
+    "raw_trials_checked": 1211,
+    "published_rows": 1204,
+    "unadjudicated_disagreements": 0,
+    "adjudicated_historical_scorer_corrections": 1
+  },
+  "isolation_trap": {
+    "trials": 24,
+    "unique_trial_ids": 24,
+    "unique_sessions": 24,
+    "protected_raw_records": 24,
+    "harness_failures": 0,
+    "scorer_disagreements": 0
+  },
+  "promptfoo_operational_slice": {
+    "trials": 144,
+    "behavioral_successes": 127,
+    "unique_sessions": 144,
+    "protected_raw_records": 144,
+    "harness_failures": 0,
+    "scorer_disagreements": 0
+  },
+  "direct_shadow_slice": {
+    "trials": 144,
+    "behavioral_successes": 134,
+    "harness_failures": 0,
+    "assignment_mismatches": 0,
+    "fixture_hash_mismatches": 0
+  },
+  "interpretation": "Behavioral equality was not a parity criterion because the independent agent calls were stochastic and backend assignment was not randomized as a causal treatment."
+}

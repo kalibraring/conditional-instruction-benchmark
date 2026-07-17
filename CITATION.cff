@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use CIB in research or evaluation work, cite this software."
+title: "Conditional Instruction Benchmark"
+type: software
+authors:
+  - family-names: Kamar
+    given-names: Mohamad
+repository-code: "https://github.com/kalibraring/conditional-instruction-benchmark"
+url: "https://github.com/kalibraring/conditional-instruction-benchmark"
+version: 0.2.0
+date-released: 2026-07-17
+license: MIT
+keywords:
+  - AI agents
+  - agent evaluation
+  - conditional instructions
+  - progressive disclosure
+  - prompt engineering
