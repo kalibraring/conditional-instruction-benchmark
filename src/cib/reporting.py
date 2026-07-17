@@ -40,6 +40,10 @@ ABSOLUTE_PATH_FRAGMENT = re.compile(
     r"(?:^|[^A-Za-z0-9_.~+/\\-])"
     r"(?:/{1,3}[A-Za-z0-9_.~+-]|[A-Za-z]:[\\/])"
 )
+UNC_PATH_FRAGMENT = re.compile(
+    r"(?:^|[^A-Za-z0-9_.~+/\\-])"
+    r"\\\\[A-Za-z0-9_.~-]+\\[A-Za-z0-9_.~-]+"
+)
 PUBLIC_TEXT_FIELDS = (
     "run_id",
     "trial_id",
@@ -597,6 +601,7 @@ def render_html(report: dict[str, Any]) -> str:
     )
     run = report["run"]
     integrity = report["integrity"]
+    integrity_class = "pass" if integrity["passed"] else "fail"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -612,6 +617,7 @@ table {{ border-collapse: collapse; width: 100%; margin: 1rem 0 2rem; }}
 th, td {{ border-bottom: 1px solid #8886; padding: .55rem; text-align: left; }}
 code {{ overflow-wrap: anywhere; }}
 .pass {{ color: #16803a; font-weight: 700; }}
+.fail {{ color: #c62828; font-weight: 700; }}
 </style>
 </head>
 <body>
@@ -628,7 +634,7 @@ code {{ overflow-wrap: anywhere; }}
 <h2>Claim boundary</h2>
 <p class="callout"><strong>{html.escape(report['claim']['status'])}</strong> — {html.escape(report['claim']['statement'])}</p>
 <h2>Evidence integrity</h2>
-<p>Audit passed: <span class="pass">{'yes' if integrity['passed'] else 'no'}</span> ·
+<p>Audit passed: <span class="{integrity_class}">{'yes' if integrity['passed'] else 'no'}</span> ·
 Unique trials: {integrity['unique_trial_ids']} · Harness failures: {integrity['harness_failures']} ·
 Scorer disagreements: {integrity['scorer_disagreements']} · Identity disagreements: {integrity['identity_disagreements']}</p>
 <h2>Outcomes</h2>
@@ -700,6 +706,7 @@ def _validate_public_text(value: str, field: str) -> None:
         or PurePosixPath(value).is_absolute()
         or PureWindowsPath(value).is_absolute()
         or ABSOLUTE_PATH_FRAGMENT.search(value)
+        or UNC_PATH_FRAGMENT.search(value)
         or UNSAFE_PUBLIC_TEXT.search(value)
     ):
         raise ReportValidationError(

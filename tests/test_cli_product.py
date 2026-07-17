@@ -405,6 +405,7 @@ def test_report_command_rejects_undeclared_backend(tmp_path: Path) -> None:
         "D:" + "\\private-study",
         "study at D:" + "\\private-study",
         "model=D:" + "\\private-study",
+        "study=" + "\\\\server\\share\\private-study",
         "AKIA" + "A" * 16,
     ),
 )
@@ -561,6 +562,34 @@ def test_report_command_requires_all_promptfoo_audit_fields(tmp_path: Path) -> N
     assert completed.returncode != 0
     assert "must be a list" in completed.stderr
     assert not (run_dir / "report").exists()
+
+
+def test_failed_integrity_html_uses_failure_style(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["promptfoo_success"] = not summary[0]["behavioral_success"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit["promptfoo_cib_disagreements"] = [{"trial_id": summary[0]["trial_id"]}]
+    audit["passed"] = False
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    html = (run_dir / "report" / "report.html").read_text()
+    assert '<span class="fail">no</span>' in html
 
 
 def test_report_command_rejects_symlinked_canonical_input(tmp_path: Path) -> None:
