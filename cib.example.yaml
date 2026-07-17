@@ -1,4 +1,4 @@
-schema_version: cib-check/1
+schema_version: cib-check/2
 name: openai-docs-routing
 instruction:
   condition: the user asks how to build with or configure an OpenAI product
@@ -16,7 +16,8 @@ execution:
   repetitions: 1
   jobs: 2
   seed: 20260717
-  timeout_seconds: 300
+  trial_timeout_seconds: 300
+  study_timeout_seconds: 960
 thresholds:
   minimum_required_use_rate: 1.0
   minimum_avoided_unnecessary_use_rate: 1.0

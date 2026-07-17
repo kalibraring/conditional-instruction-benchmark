@@ -1,4 +1,4 @@
-schema_version: cib-check/1
+schema_version: cib-check/2
 name: hosted-action-smoke
 instruction:
   condition: the request contains ACTION_REQUIRED
@@ -16,7 +16,8 @@ execution:
   repetitions: 1
   jobs: 2
   seed: 17
-  timeout_seconds: 30
+  trial_timeout_seconds: 30
+  study_timeout_seconds: 180
 thresholds:
   minimum_required_use_rate: 1.0
   minimum_avoided_unnecessary_use_rate: 1.0

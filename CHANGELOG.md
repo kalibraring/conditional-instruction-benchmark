@@ -11,6 +11,25 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.5.0] - 2026-07-17
+
+### Added
+
+- Add explicit per-trial and whole-study limits through `cib-check/2`, the
+  scientific CLI, execution metadata, and human-readable reports.
+- Add Promptfoo-native per-evaluation and maximum-study limits plus a final
+  process-group watchdog.
+- Add a shared monotonic study deadline to the direct Codex backend, including
+  complete fail-closed evidence for trials that never start.
+- Add auditable timeout attribution for trial and study scope.
+
+### Changed
+
+- Preserve `cib-check/1` and `--timeout` with their exact backend-dependent
+  legacy behavior, but emit a migration warning.
+- Classify any whole-study timeout as invalid evidence rather than a behavioral
+  threshold failure.
+
 ## [0.4.0] - 2026-07-17
 
 ### Added
@@ -69,7 +88,8 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.1

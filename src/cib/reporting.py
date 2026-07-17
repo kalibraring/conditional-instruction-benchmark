@@ -16,6 +16,7 @@ from .product_decision import POLICY_ARMS, build_product_decision
 
 
 REPORT_SCHEMA_VERSION = "cib-report/1"
+TIMEOUT_POLICY_SCHEMA_VERSION = "cib-timeout-policy/2"
 ARMS = ("if", "iff", "if_else_not")
 IDENTITY_FIELDS = (
     "random_order",
@@ -134,6 +135,9 @@ def build_report(run_dir: Path) -> dict[str, Any]:
                 "Manifest and summary assignment fields disagree"
             )
     execution = study.get("execution") or {}
+    if not isinstance(execution, dict):
+        raise ReportValidationError("Study execution metadata has an invalid shape")
+    timeout_policy = _load_timeout_policy(execution)
     run_id = _single_value(manifest, "run_id")
     if execution.get("run_id") != run_id:
         raise ReportValidationError(
@@ -171,7 +175,13 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     placements = sorted({str(row["placement"]) for row in rows})
     orders = sorted(int(row["random_order"]) for row in manifest)
     complete_permutation = orders == list(range(len(manifest)))
-    integrity = _recompute_integrity(audit, rows, summary, backend)
+    integrity = _recompute_integrity(
+        audit,
+        rows,
+        summary,
+        backend,
+        require_timeout_integrity=timeout_policy["schema_version"] is not None,
+    )
     is_smoke = (
         len(rows) == 6
         and len(cases) == 1
@@ -232,6 +242,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
                 "complete_permutation": complete_permutation,
             },
             "duration_seconds": execution.get("duration_seconds"),
+            "timeouts": timeout_policy,
         },
         "integrity": integrity,
         "claim": claim,
@@ -375,13 +386,55 @@ def _require_boolean(row: dict[str, Any], field: str) -> None:
         raise ReportValidationError(f"{field} must be a boolean")
 
 
+def _load_timeout_policy(execution: dict[str, Any]) -> dict[str, Any]:
+    if "timeout_policy" not in execution:
+        return {
+            "schema_version": None,
+            "trial_seconds": None,
+            "study_seconds": None,
+            "source": "legacy_artifact_without_timeout_metadata",
+            "backend_enforcement": "not_recorded",
+        }
+    policy = execution["timeout_policy"]
+    expected = {
+        "schema_version",
+        "trial_seconds",
+        "study_seconds",
+        "source",
+        "backend_enforcement",
+    }
+    if not isinstance(policy, dict) or set(policy) != expected:
+        raise ReportValidationError("Timeout policy fields are incomplete or unknown")
+    if policy["schema_version"] != TIMEOUT_POLICY_SCHEMA_VERSION:
+        raise ReportValidationError("Unsupported timeout policy schema")
+    for field in ("trial_seconds", "study_seconds"):
+        value = policy[field]
+        if value is not None and (type(value) is not int or value < 1):
+            raise ReportValidationError(
+                f"Timeout policy field {field} must be a positive integer or null"
+            )
+    for field in ("source", "backend_enforcement"):
+        value = policy[field]
+        if not isinstance(value, str) or not value:
+            raise ReportValidationError(f"Timeout policy field {field} is invalid")
+        validate_public_text(value, f"timeout_policy.{field}")
+    return dict(policy)
+
+
 def _recompute_integrity(
     audit: dict[str, Any],
     rows: list[dict[str, Any]],
     summary: list[dict[str, Any]],
     backend: str,
+    *,
+    require_timeout_integrity: bool,
 ) -> dict[str, Any]:
     summary_ids = [str(row["trial_id"]) for row in summary]
+    timeout_integrity = _load_timeout_integrity(
+        audit,
+        summary,
+        required=require_timeout_integrity,
+    )
     behavioral_successes = sum(row["success"] for row in rows)
     harness_failures = sum(row["harness_failure"] for row in rows)
     if (
@@ -408,6 +461,10 @@ def _recompute_integrity(
         unique_session_ids = len(
             {session_id for session_id in session_ids if session_id}
         )
+        timeout_affected_ids = set(
+            timeout_integrity["timeout_affected_trial_ids"]
+        )
+        expected_session_ids = len(rows) - len(timeout_affected_ids)
         scorer_disagreements = sum(
             row["promptfoo_success"] != row["behavioral_success"]
             for row in summary
@@ -425,7 +482,7 @@ def _recompute_integrity(
                 _audit_int(audit, "duplicate_trial_ids") == 0,
                 _audit_int(audit, "protected_raw_files") == len(rows),
                 _audit_int(audit, "protected_source_rows") == len(rows),
-                unique_session_ids == len(rows),
+                unique_session_ids == expected_session_ids,
                 not _audit_list(audit, "missing_protected_raw"),
                 not _audit_list(audit, "unexpected_protected_raw"),
                 scorer_disagreements == 0,
@@ -438,7 +495,9 @@ def _recompute_integrity(
         backend_passed = _audit_int(audit, "raw_files") == len(rows)
     else:
         raise ReportValidationError("Unsupported report backend")
-    recomputed_passed = common_passed and backend_passed
+    recomputed_passed = (
+        common_passed and backend_passed and not timeout_integrity["study_timed_out"]
+    )
     _require_boolean(audit, "passed")
     if audit["passed"] is not recomputed_passed:
         raise ReportValidationError(
@@ -452,7 +511,105 @@ def _recompute_integrity(
         "harness_failures": harness_failures,
         "scorer_disagreements": scorer_disagreements,
         "identity_disagreements": len(identity_disagreements),
+        **timeout_integrity,
     }
+
+
+def _load_timeout_integrity(
+    audit: dict[str, Any],
+    summary: list[dict[str, Any]],
+    *,
+    required: bool,
+) -> dict[str, Any]:
+    summary_ids = [str(row["trial_id"]) for row in summary]
+    fields = {
+        "study_timed_out",
+        "trial_timeout_count",
+        "study_timeout_count",
+        "trial_timeout_trial_ids",
+        "study_timeout_trial_ids",
+        "timeout_affected_trial_ids",
+    }
+    present = fields.intersection(audit)
+    if not present:
+        if required:
+            raise ReportValidationError("Audit timeout fields are required")
+        return {
+            "study_timed_out": False,
+            "trial_timeout_count": 0,
+            "study_timeout_count": 0,
+            "trial_timeout_trial_ids": [],
+            "study_timeout_trial_ids": [],
+            "timeout_affected_trial_ids": [],
+        }
+    if present != fields:
+        raise ReportValidationError("Audit timeout fields are incomplete")
+    for row in summary:
+        if row.get("timeout_scope") not in {None, "trial", "study"}:
+            raise ReportValidationError("Derived summary timeout scope is invalid")
+    derived_trial_ids = sorted(
+        str(row["trial_id"])
+        for row in summary
+        if row.get("timeout_scope") == "trial"
+    )
+    derived_study_ids = sorted(
+        str(row["trial_id"])
+        for row in summary
+        if row.get("timeout_scope") == "study"
+    )
+    derived_affected_ids = sorted(set(derived_trial_ids) | set(derived_study_ids))
+    _require_boolean(audit, "study_timed_out")
+    trial_count = _audit_nonnegative_int(audit, "trial_timeout_count")
+    study_count = _audit_nonnegative_int(audit, "study_timeout_count")
+    trial_ids = _audit_trial_ids(audit, "trial_timeout_trial_ids", summary_ids)
+    study_ids = _audit_trial_ids(audit, "study_timeout_trial_ids", summary_ids)
+    affected_ids = _audit_trial_ids(
+        audit, "timeout_affected_trial_ids", summary_ids
+    )
+    if trial_count != len(trial_ids) or study_count != len(study_ids):
+        raise ReportValidationError("Audit timeout counts disagree with timeout scope")
+    if audit["study_timed_out"] is not bool(study_count):
+        raise ReportValidationError("Audit study timeout status disagrees with scope")
+    if set(affected_ids) != set(trial_ids).union(study_ids):
+        raise ReportValidationError("Audit timeout affected scope disagrees")
+    if (
+        sorted(trial_ids) != derived_trial_ids
+        or sorted(study_ids) != derived_study_ids
+        or sorted(affected_ids) != derived_affected_ids
+    ):
+        raise ReportValidationError(
+            "Audit timeout scope disagrees with derived summary"
+        )
+    return {
+        "study_timed_out": audit["study_timed_out"],
+        "trial_timeout_count": trial_count,
+        "study_timeout_count": study_count,
+        "trial_timeout_trial_ids": trial_ids,
+        "study_timeout_trial_ids": study_ids,
+        "timeout_affected_trial_ids": affected_ids,
+    }
+
+
+def _audit_nonnegative_int(audit: dict[str, Any], field: str) -> int:
+    value = _audit_int(audit, field)
+    if value < 0:
+        raise ReportValidationError(f"Audit field {field} must be non-negative")
+    return value
+
+
+def _audit_trial_ids(
+    audit: dict[str, Any], field: str, summary_ids: list[str]
+) -> list[str]:
+    values = _audit_list(audit, field)
+    if any(not isinstance(value, str) for value in values):
+        raise ReportValidationError(f"Audit field {field} must contain trial IDs")
+    if len(values) != len(set(values)):
+        raise ReportValidationError(f"Audit field {field} contains duplicate trial IDs")
+    if not set(values).issubset(summary_ids):
+        raise ReportValidationError(f"Audit field {field} contains an unknown trial ID")
+    for value in values:
+        validate_public_text(value, field)
+    return list(values)
 
 
 def _audit_int(audit: dict[str, Any], field: str) -> int:
@@ -604,6 +761,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Blocks: {run['blocks']} · Randomization complete: "
         f"{'yes' if run['randomization']['complete_permutation'] else 'no'}  ",
         f"Duration: {_duration(run['duration_seconds'])}  ",
+        _timeout_limits_markdown(run["timeouts"]),
         f"Trials: {run['trial_count']} across {run['task_families']} task family/families",
         "",
         "## Claim boundary",
@@ -616,7 +774,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Unique trials: {integrity['unique_trial_ids']}  ",
         f"Harness failures: {integrity['harness_failures']}  ",
         f"Scorer disagreements: {integrity['scorer_disagreements']}  ",
-        f"Identity disagreements: {integrity['identity_disagreements']}",
+        f"Identity disagreements: {integrity['identity_disagreements']}  ",
+        "Timeout outcomes: "
+        f"per-trial affected trials {integrity['trial_timeout_count']} · "
+        f"whole-study affected trials {integrity['study_timeout_count']} · "
+        f"study timed out {'yes' if integrity['study_timed_out'] else 'no'} · "
+        "affected trial IDs: "
+        f"{_missing_markdown(integrity['timeout_affected_trial_ids'])}",
         "",
         "## Outcomes",
         "",
@@ -764,13 +928,15 @@ code {{ overflow-wrap: anywhere; }}
 <strong>Placement(s):</strong> {', '.join(f'<code>{html.escape(value)}</code>' for value in run['placements'])}<br>
 <strong>Task families:</strong> {html.escape(_case_summary(run['cases']))}<br>
 <strong>Blocks:</strong> {run['blocks']} · <strong>Randomization complete:</strong> {'yes' if run['randomization']['complete_permutation'] else 'no'} · <strong>Duration:</strong> {html.escape(_duration(run['duration_seconds']))}<br>
+{_timeout_limits_html(run['timeouts'])}<br>
 <strong>Trials:</strong> {run['trial_count']} across {run['task_families']} task family/families</div>
 <h2>Claim boundary</h2>
 <p class="callout"><strong>{html.escape(report['claim']['status'])}</strong> — {html.escape(report['claim']['statement'])}</p>
 <h2>Evidence integrity</h2>
 <p>Audit passed: <span class="{integrity_class}">{'yes' if integrity['passed'] else 'no'}</span> ·
 Unique trials: {integrity['unique_trial_ids']} · Harness failures: {integrity['harness_failures']} ·
-Scorer disagreements: {integrity['scorer_disagreements']} · Identity disagreements: {integrity['identity_disagreements']}</p>
+Scorer disagreements: {integrity['scorer_disagreements']} · Identity disagreements: {integrity['identity_disagreements']}<br>
+Timeout outcomes: per-trial affected trials {integrity['trial_timeout_count']} · whole-study affected trials {integrity['study_timeout_count']} · study timed out {'yes' if integrity['study_timed_out'] else 'no'} · affected trial IDs: {html.escape(_missing_text(integrity['timeout_affected_trial_ids']))}</p>
 <h2>Outcomes</h2>
 <table><thead><tr><th>Placement</th><th>Estimand</th><th>Arm</th><th>Success</th><th>Rate</th><th>95% Wilson interval</th><th>Harness failures</th></tr></thead>
 <tbody>{''.join(outcome_rows)}</tbody></table>
@@ -882,3 +1048,38 @@ def _case_summary(cases: list[dict[str, Any]]) -> str:
 
 def _duration(value: float | int | None) -> str:
     return "n/a" if value is None else f"{float(value):.1f}s"
+
+
+def _timeout_limits_markdown(policy: dict[str, Any]) -> str:
+    origin = _timeout_policy_origin(policy)
+    return (
+        "Timeout limits: "
+        f"per-trial limit {_timeout_limit(policy['trial_seconds'])} · "
+        f"whole-study limit {_timeout_limit(policy['study_seconds'])} · "
+        f"source `{policy['source']}` ({origin}) · "
+        f"backend enforcement `{policy['backend_enforcement']}`  "
+    )
+
+
+def _timeout_limits_html(policy: dict[str, Any]) -> str:
+    origin = _timeout_policy_origin(policy)
+    return (
+        "<strong>Timeout limits:</strong> "
+        f"per-trial limit {html.escape(_timeout_limit(policy['trial_seconds']))} · "
+        f"whole-study limit {html.escape(_timeout_limit(policy['study_seconds']))} · "
+        f"source <code>{html.escape(policy['source'])}</code> "
+        f"({html.escape(origin)}) · backend enforcement "
+        f"<code>{html.escape(policy['backend_enforcement'])}</code>"
+    )
+
+
+def _timeout_limit(value: int | None) -> str:
+    return "not recorded" if value is None else f"{value}s"
+
+
+def _timeout_policy_origin(policy: dict[str, Any]) -> str:
+    if policy["schema_version"] is None:
+        return "legacy artifact; timeout metadata absent"
+    if policy["source"].startswith("legacy_"):
+        return "legacy compatibility metadata"
+    return "explicit metadata"

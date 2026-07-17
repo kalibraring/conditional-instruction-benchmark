@@ -42,7 +42,26 @@ def _promptfoo_study(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    report = inspect_environment(Path.cwd(), args.auth)
+    config = None
+    if args.config is not None:
+        try:
+            config = load_check_config(args.config)
+        except CheckConfigError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 2
+    report = inspect_environment(
+        Path.cwd(),
+        args.auth,
+        backend=config.backend if config is not None else None,
+    )
+    if config is not None:
+        report["check_timeout_policy"] = {
+            "schema_version": config.schema_version,
+            "trial_seconds": config.trial_timeout_seconds,
+            "study_seconds": config.study_timeout_seconds,
+            "source": config.timeout_source,
+            "legacy_warning": config.legacy_warning,
+        }
     print(json.dumps(report, indent=2))
     return 0 if report["ready"] else 2
 
@@ -99,6 +118,8 @@ def _report(args: argparse.Namespace) -> int:
 def _check(args: argparse.Namespace) -> int:
     try:
         config = load_check_config(args.config)
+        if config.legacy_warning:
+            print(f"warning: {config.legacy_warning}", file=sys.stderr)
         output_dir = args.output_dir or default_check_output(config)
         result = run_check(
             config=config,
@@ -117,6 +138,31 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _study(args: argparse.Namespace) -> int:
+    timeout_values = {
+        "--timeout": args.timeout,
+        "--trial-timeout-seconds": args.trial_timeout_seconds,
+        "--study-timeout-seconds": args.study_timeout_seconds,
+    }
+    invalid_timeout = next(
+        (
+            name
+            for name, value in timeout_values.items()
+            if value is not None and value < 1
+        ),
+        None,
+    )
+    if invalid_timeout is not None:
+        print(f"error: {invalid_timeout} must be a positive integer", file=sys.stderr)
+        return 2
+    if args.timeout is not None and (
+        args.trial_timeout_seconds is not None
+        or args.study_timeout_seconds is not None
+    ):
+        print(
+            "error: --timeout cannot be combined with explicit trial or study timeouts",
+            file=sys.stderr,
+        )
+        return 2
     selected_cases = (
         case_ids_for_layer(args.layer)
         if "all" in args.case
@@ -136,15 +182,45 @@ def _study(args: argparse.Namespace) -> int:
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
     }
+    if args.timeout is not None:
+        timeout_source = "legacy_cli"
+        if args.backend == "promptfoo-codex-sdk":
+            trial_timeout_seconds = None
+            study_timeout_seconds = args.timeout
+        else:
+            trial_timeout_seconds = args.timeout
+            study_timeout_seconds = None
+        print(
+            "warning: --timeout is deprecated and retains backend-dependent legacy "
+            "semantics; use --trial-timeout-seconds and --study-timeout-seconds",
+            file=sys.stderr,
+        )
+    else:
+        trial_timeout_seconds = (
+            args.trial_timeout_seconds
+            if args.trial_timeout_seconds is not None
+            else 300
+        )
+        study_timeout_seconds = args.study_timeout_seconds
+        timeout_source = (
+            "explicit_cli"
+            if study_timeout_seconds is not None
+            else "derived_cli"
+        )
     if args.backend == "promptfoo-codex-sdk":
         result = run_promptfoo_study(
             project_root=Path.cwd(),
-            timeout_seconds=getattr(args, "timeout", 300),
+            trial_timeout_seconds=trial_timeout_seconds,
+            study_timeout_seconds=study_timeout_seconds,
+            timeout_source=timeout_source,
             **common,
         )
     else:
         result = run_direct_study(
-            timeout_seconds=getattr(args, "timeout", 300), **common
+            trial_timeout_seconds=trial_timeout_seconds,
+            study_timeout_seconds=study_timeout_seconds,
+            timeout_source=timeout_source,
+            **common,
         )
     print(json.dumps(result, indent=2))
     return 0 if result["audit"]["passed"] else 2
@@ -375,7 +451,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     study.add_argument("--replicates", type=int, default=2)
     study.add_argument("--jobs", type=int, default=8)
-    study.add_argument("--timeout", type=int, default=300)
+    study.add_argument("--timeout", type=int)
+    study.add_argument("--trial-timeout-seconds", type=int)
+    study.add_argument("--study-timeout-seconds", type=int)
     study.add_argument("--seed", type=int, default=20260714)
     study.add_argument("--model", default="gpt-5.6-sol")
     study.add_argument("--reasoning-effort", default="high")
@@ -404,7 +482,9 @@ def build_parser() -> argparse.ArgumentParser:
     generic_study.add_argument("--replicates", type=int, default=2)
     generic_study.add_argument("--jobs", type=int, default=8)
     generic_study.add_argument("--seed", type=int, default=20260714)
-    generic_study.add_argument("--timeout", type=int, default=300)
+    generic_study.add_argument("--timeout", type=int)
+    generic_study.add_argument("--trial-timeout-seconds", type=int)
+    generic_study.add_argument("--study-timeout-seconds", type=int)
     generic_study.add_argument("--model", default="gpt-5.6-sol")
     generic_study.add_argument("--reasoning-effort", default="high")
     generic_study.add_argument(
@@ -431,6 +511,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument(
         "--auth", type=Path, default=Path.home() / ".codex" / "auth.json"
+    )
+    doctor.add_argument(
+        "--config",
+        type=Path,
+        help="Also validate and show the resolved check timeout contract",
     )
     doctor.set_defaults(func=_doctor)
     plan = subparsers.add_parser(

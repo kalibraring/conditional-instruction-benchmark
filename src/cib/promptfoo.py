@@ -14,6 +14,9 @@ def export_promptfoo_suite(
     rows: Iterable[MaterializedTrial],
     output_dir: Path,
     cases: Mapping[str, TaskCase] | None = None,
+    *,
+    trial_timeout_seconds: int | None = None,
+    study_timeout_seconds: int | None = None,
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_dir = output_dir / "protected" / "raw"
@@ -72,6 +75,11 @@ def export_promptfoo_suite(
         encoding="utf-8",
     )
     config_path = output_dir / "promptfooconfig.yaml"
+    evaluate_options = ["evaluateOptions:", "  cache: false"]
+    if trial_timeout_seconds is not None:
+        evaluate_options.append(f"  timeoutMs: {trial_timeout_seconds * 1000}")
+    if study_timeout_seconds is not None:
+        evaluate_options.append(f"  maxEvalTimeMs: {study_timeout_seconds * 1000}")
     config_path.write_text(
         "\n".join(
             [
@@ -90,8 +98,7 @@ def export_promptfoo_suite(
                 f"tests: file://{tests_path.name}",
                 "extensions:",
                 f"  - file://{extension_path}:extensionHook",
-                "evaluateOptions:",
-                "  cache: false",
+                *evaluate_options,
                 "sharing: false",
                 "",
             ]

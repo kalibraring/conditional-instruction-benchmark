@@ -17,7 +17,7 @@ def test_cli_prints_installed_version() -> None:
         text=True,
     )
 
-    assert completed.stdout.strip() == "cib 0.4.0"
+    assert completed.stdout.strip() == "cib 0.5.0"
 
 
 def _write_completed_study(run_dir: Path) -> str:
@@ -146,6 +146,56 @@ def _write_audit(run_dir: Path, summary: list[dict[str, object]]) -> None:
     study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
 
 
+def _write_timeout_policy(
+    run_dir: Path,
+    *,
+    trial_seconds: int | None,
+    study_seconds: int | None,
+    source: str,
+    backend_enforcement: str,
+) -> None:
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["execution"]["timeout_policy"] = {
+        "schema_version": "cib-timeout-policy/2",
+        "trial_seconds": trial_seconds,
+        "study_seconds": study_seconds,
+        "source": source,
+        "backend_enforcement": backend_enforcement,
+    }
+    study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
+
+
+def _write_timeout_audit(
+    run_dir: Path,
+    *,
+    study_timed_out: bool = False,
+    trial_ids: list[str] | None = None,
+    study_ids: list[str] | None = None,
+) -> None:
+    trial_ids = trial_ids or []
+    study_ids = study_ids or []
+    affected_ids = list(dict.fromkeys([*trial_ids, *study_ids]))
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit.update(
+        {
+            "study_timed_out": study_timed_out,
+            "trial_timeout_count": len(trial_ids),
+            "study_timeout_count": len(study_ids),
+            "trial_timeout_trial_ids": trial_ids,
+            "study_timeout_trial_ids": study_ids,
+            "timeout_affected_trial_ids": affected_ids,
+            "passed": audit["passed"] and not study_timed_out,
+        }
+    )
+    audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
+
+
 def test_plan_command_writes_six_trials_without_model_call(tmp_path: Path) -> None:
     output = tmp_path / "plan"
     completed = subprocess.run(
@@ -201,7 +251,7 @@ def test_report_command_writes_safe_self_contained_reports(tmp_path: Path) -> No
     }
     report = json.loads((report_dir / "report.json").read_text())
     assert report["schema_version"] == "cib-report/1"
-    assert report["provenance"]["generator_version"] == "0.4.0"
+    assert report["provenance"]["generator_version"] == "0.5.0"
     assert report["claim"]["status"] == "exploratory_smoke"
     assert report["run"]["cases"] == [
         {"case_id": "literal_flag", "variants": [0]}
@@ -211,6 +261,14 @@ def test_report_command_writes_safe_self_contained_reports(tmp_path: Path) -> No
         "orders": [0, 1, 2, 3, 4, 5],
         "complete_permutation": True,
     }
+    assert report["run"]["timeouts"] == {
+        "schema_version": None,
+        "trial_seconds": None,
+        "study_seconds": None,
+        "source": "legacy_artifact_without_timeout_metadata",
+        "backend_enforcement": "not_recorded",
+    }
+    assert report["integrity"]["timeout_affected_trial_ids"] == []
     expected_rates = {
         ("if", True): 1.0,
         ("if", False): 0.0,
@@ -249,10 +307,327 @@ def test_report_command_writes_safe_self_contained_reports(tmp_path: Path) -> No
     assert "<!doctype html>" in html.lower()
     assert "<style>" in html
     assert "<script" not in html
+    assert (
+        "Timeout limits: per-trial limit not recorded · whole-study limit not recorded · "
+        "source `legacy_artifact_without_timeout_metadata` (legacy artifact; "
+        "timeout metadata absent) · backend enforcement `not_recorded`"
+        in markdown
+    )
+    assert (
+        "<strong>Timeout limits:</strong> per-trial limit not recorded · whole-study "
+        "limit not recorded · source <code>legacy_artifact_without_timeout_metadata</code> "
+        "(legacy artifact; timeout metadata absent) · backend enforcement "
+        "<code>not_recorded</code>"
+        in html
+    )
     public_reports = completed.stdout + json.dumps(report) + markdown + html
     assert "private-nonce-value" not in public_reports
     assert "private-session" not in public_reports
     assert "/" + "Users/example" not in public_reports
+
+
+def test_report_exposes_v2_timeout_policy_and_exact_rendering(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    _write_timeout_policy(
+        run_dir,
+        trial_seconds=45,
+        study_seconds=900,
+        source="explicit_check_config",
+        backend_enforcement="trial_process_and_study_watchdog",
+    )
+    _write_timeout_audit(run_dir)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    assert report["run"]["timeouts"] == {
+        "schema_version": "cib-timeout-policy/2",
+        "trial_seconds": 45,
+        "study_seconds": 900,
+        "source": "explicit_check_config",
+        "backend_enforcement": "trial_process_and_study_watchdog",
+    }
+    expected_timeout_integrity = {
+        "study_timed_out": False,
+        "trial_timeout_count": 0,
+        "study_timeout_count": 0,
+        "trial_timeout_trial_ids": [],
+        "study_timeout_trial_ids": [],
+        "timeout_affected_trial_ids": [],
+    }
+    assert {
+        key: report["integrity"][key] for key in expected_timeout_integrity
+    } == expected_timeout_integrity
+    markdown = (run_dir / result["report_markdown"]).read_text()
+    html = (run_dir / result["report_html"]).read_text()
+    assert (
+        "Timeout limits: per-trial limit 45s · whole-study limit 900s · source "
+        "`explicit_check_config` (explicit metadata) · backend enforcement "
+        "`trial_process_and_study_watchdog`"
+        in markdown
+    )
+    assert (
+        "<strong>Timeout limits:</strong> per-trial limit 45s · whole-study limit 900s · "
+        "source <code>explicit_check_config</code> (explicit metadata) · backend "
+        "enforcement <code>trial_process_and_study_watchdog</code>"
+        in html
+    )
+
+
+def test_report_exposes_legacy_promptfoo_whole_study_limit_only(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    _write_timeout_policy(
+        run_dir,
+        trial_seconds=None,
+        study_seconds=300,
+        source="legacy_timeout_argument",
+        backend_enforcement="promptfoo_process_watchdog_only",
+    )
+    _write_timeout_audit(run_dir)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    assert report["run"]["timeouts"]["trial_seconds"] is None
+    assert report["run"]["timeouts"]["study_seconds"] == 300
+    markdown = (run_dir / result["report_markdown"]).read_text()
+    assert (
+        "Timeout limits: per-trial limit not recorded · whole-study limit 300s · source "
+        "`legacy_timeout_argument` (legacy compatibility metadata) · backend enforcement "
+        "`promptfoo_process_watchdog_only`"
+        in markdown
+    )
+
+
+@pytest.mark.parametrize(
+    "policy, expected_error",
+    (
+        ([], "fields are incomplete or unknown"),
+        (
+            {
+                "schema_version": "cib-timeout-policy/2",
+                "trial_seconds": 30,
+                "study_seconds": 300,
+                "source": "explicit",
+            },
+            "fields are incomplete or unknown",
+        ),
+        (
+            {
+                "schema_version": "cib-timeout-policy/1",
+                "trial_seconds": 30,
+                "study_seconds": 300,
+                "source": "explicit",
+                "backend_enforcement": "both",
+            },
+            "Unsupported timeout policy schema",
+        ),
+        (
+            {
+                "schema_version": "cib-timeout-policy/2",
+                "trial_seconds": True,
+                "study_seconds": 300,
+                "source": "explicit",
+                "backend_enforcement": "both",
+            },
+            "must be a positive integer or null",
+        ),
+        (
+            {
+                "schema_version": "cib-timeout-policy/2",
+                "trial_seconds": 30,
+                "study_seconds": 0,
+                "source": "explicit",
+                "backend_enforcement": "both",
+            },
+            "must be a positive integer or null",
+        ),
+        (
+            {
+                "schema_version": "cib-timeout-policy/2",
+                "trial_seconds": 30,
+                "study_seconds": 300,
+                "source": "/" + "tmp/private-timeout-source",
+                "backend_enforcement": "both",
+            },
+            "Unsafe text in public manifest field timeout_policy.source",
+        ),
+    ),
+)
+def test_report_rejects_invalid_or_unsafe_timeout_policy(
+    tmp_path: Path, policy: object, expected_error: str
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["execution"]["timeout_policy"] = policy
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert "/" + "tmp/private-timeout-source" not in completed.stdout + completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_study_timeout_fails_recomputed_integrity_and_reports_scope(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    _write_timeout_policy(
+        run_dir,
+        trial_seconds=None,
+        study_seconds=300,
+        source="explicit_cli",
+        backend_enforcement="study_watchdog",
+    )
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["session_id"] = None
+    summary[0]["timeout_scope"] = "study"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit["unique_session_ids"] = 5
+    audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
+    _write_timeout_audit(run_dir, study_timed_out=True, study_ids=["trial-0"])
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    assert report["integrity"]["passed"] is False
+    assert report["integrity"]["study_timed_out"] is True
+    assert report["integrity"]["study_timeout_count"] == 1
+    assert report["integrity"]["timeout_affected_trial_ids"] == ["trial-0"]
+    markdown = (run_dir / result["report_markdown"]).read_text()
+    html = (run_dir / result["report_html"]).read_text()
+    wording = (
+        "Timeout outcomes: per-trial affected trials 0 · whole-study affected "
+        "trials 1 · study timed out yes · affected trial IDs:"
+    )
+    assert f"{wording} `trial-0`" in markdown
+    assert f"{wording} trial-0" in html
+
+
+@pytest.mark.parametrize(
+    "timeout_fields, expected_error",
+    (
+        ({"study_timed_out": False}, "Audit timeout fields are incomplete"),
+        (
+            {
+                "study_timed_out": True,
+                "trial_timeout_count": 0,
+                "study_timeout_count": 0,
+                "trial_timeout_trial_ids": [],
+                "study_timeout_trial_ids": [],
+                "timeout_affected_trial_ids": [],
+            },
+            "Audit study timeout status disagrees with scope",
+        ),
+    ),
+)
+def test_report_rejects_incomplete_or_inconsistent_timeout_audit(
+    tmp_path: Path,
+    timeout_fields: dict[str, object],
+    expected_error: str,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit.update(timeout_fields)
+    if timeout_fields.get("study_timed_out") is True:
+        audit["passed"] = False
+    audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert expected_error in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_rejects_timeout_audit_that_contradicts_canonical_summary(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    _write_timeout_audit(run_dir, trial_ids=["trial-0"])
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Audit timeout scope disagrees with derived summary" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_timeout_aware_report_rejects_missing_timeout_audit_fields(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    _write_timeout_policy(
+        run_dir,
+        trial_seconds=30,
+        study_seconds=300,
+        source="explicit",
+        backend_enforcement="promptfoo native limits",
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Audit timeout fields are required" in completed.stderr
+    assert not (run_dir / "report").exists()
 
 
 def test_report_command_rejects_trial_identity_mismatch_before_writing(
@@ -343,12 +718,22 @@ def test_report_command_reads_direct_backend_canonical_summary(tmp_path: Path) -
     direct_dir.mkdir()
     derived_dir = run_dir / "promptfoo" / "derived"
     (derived_dir / "summary.json").rename(direct_dir / "summary.json")
+    direct_summary_path = direct_dir / "summary.json"
+    direct_summary = json.loads(direct_summary_path.read_text())
+    direct_summary[0]["timeout_scope"] = "trial"
+    direct_summary_path.write_text(json.dumps(direct_summary), encoding="utf-8")
     direct_audit = {
         "result_rows": 6,
         "unique_trial_ids": 6,
         "raw_files": 6,
         "behavioral_successes": 4,
         "harness_failures": 0,
+        "study_timed_out": False,
+        "trial_timeout_count": 1,
+        "study_timeout_count": 0,
+        "trial_timeout_trial_ids": ["trial-0"],
+        "study_timeout_trial_ids": [],
+        "timeout_affected_trial_ids": ["trial-0"],
         "passed": True,
     }
     (direct_dir / "audit.json").write_text(
@@ -356,6 +741,13 @@ def test_report_command_reads_direct_backend_canonical_summary(tmp_path: Path) -
     )
     study_path = run_dir / "study-result.json"
     study = json.loads(study_path.read_text())
+    study["execution"]["timeout_policy"] = {
+        "schema_version": "cib-timeout-policy/2",
+        "trial_seconds": 30,
+        "study_seconds": 300,
+        "source": "explicit",
+        "backend_enforcement": "direct Codex process deadlines",
+    }
     study["audit"] = direct_audit
     study_path.write_text(json.dumps(study), encoding="utf-8")
 
@@ -369,7 +761,9 @@ def test_report_command_reads_direct_backend_canonical_summary(tmp_path: Path) -
     result = json.loads(completed.stdout)
     report = json.loads((run_dir / result["report_json"]).read_text())
     assert report["run"]["backend"] == "direct-codex"
+    assert report["run"]["timeouts"]["trial_seconds"] == 30
     assert report["integrity"]["passed"] is True
+    assert report["integrity"]["trial_timeout_trial_ids"] == ["trial-0"]
 
 
 def test_report_command_rejects_undeclared_backend(tmp_path: Path) -> None:
