@@ -1,0 +1,43 @@
+name: Action smoke
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  action-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install fake Codex boundary
+        run: |
+          mkdir -p "${RUNNER_TEMP}/cib-bin"
+          install -m 0755 tests/fixtures/action/fake-codex \
+            "${RUNNER_TEMP}/cib-bin/codex"
+          echo "${RUNNER_TEMP}/cib-bin" >> "${GITHUB_PATH}"
+
+      - name: Run local CIB action
+        id: cib
+        uses: ./
+        with:
+          config: tests/fixtures/action/cib.yaml
+          openai-api-key: "fixture-api-key"
+          artifact-name: cib-action-smoke-report
+          retention-days: "1"
+
+      - name: Assert public action verdict
+        if: steps.cib.outputs.verdict == 'pass'
+        env:
+          CIB_VERDICT: ${{ steps.cib.outputs.verdict }}
+          CIB_EXIT_CODE: ${{ steps.cib.outputs.exit-code }}
+        run: |
+          test "${CIB_VERDICT}" = "pass"
+          test "${CIB_EXIT_CODE}" = "0"

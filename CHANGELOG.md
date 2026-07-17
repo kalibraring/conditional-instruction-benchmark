@@ -11,6 +11,24 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.4.0] - 2026-07-17
+
+### Added
+
+- Add strict `cib.yaml` configuration and one-command `cib check` execution with
+  CI-compatible `PASS`, `FAIL`, and `INVALID` exit behavior.
+- Add a ten-second decision above the detailed scientific Markdown and HTML
+  reports while preserving public/private evidence boundaries.
+- Add a reusable least-privilege GitHub Action with pinned dependencies, scoped
+  Codex API-key authentication, safe artifact upload, and a quota-free hosted
+  self-test.
+- Add the v0.4.0 product contract and a copyable example configuration.
+
+### Changed
+
+- Lead the README and product strategy with the developer outcome; retain the
+  multi-command experiment workflow as the advanced path.
+
 ## [0.3.0] - 2026-07-17
 
 ### Added
@@ -51,7 +69,8 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.4.0
 [0.3.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.3.0
 [0.2.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.0

@@ -2,16 +2,18 @@
 
 ## Product promise
 
-CIB helps agent builders discover whether small changes in conditional wording
-change resource routing—and separate wording effects from accidental policy
-changes or runner artifacts.
+**Prove your AI agent did the thing—not just that it said it did.**
+
+CIB gives agent builders operational evidence that a designated resource was
+used when required and avoided when unnecessary. Its scientific engine then
+separates wording effects from accidental policy changes or runner artifacts.
 
 ## Primary users and jobs
 
 | User | Job | Evidence of value |
 |---|---|---|
-| Agent framework author | Choose reliable activation language for skills, docs, and tools | Reproducible necessary-use and avoided-unnecessary-use rates |
-| Prompt or skill author | Test one instruction placement before rollout | Small frozen study with exact designated-resource evidence |
+| Team shipping agent resources | Keep instruction changes from silently breaking routing | A CI verdict backed by exact designated-resource evidence |
+| Prompt or skill author | Test one condition and placement before rollout | Required-use and avoided-unnecessary-use rates |
 | Model provider or evaluator | Compare instruction-following behavior across surfaces or agents | Versioned portable manifest and evidence contract |
 | Researcher | Run a defensible causal experiment rather than a prompt bake-off | Preregistered arms, controls, missingness, uncertainty, and claim boundaries |
 
@@ -27,16 +29,18 @@ protocol running on Promptfoo or another declared execution backend.
 
 ## Activation journey
 
-1. `cib doctor` proves the environment without spending model quota.
-2. `cib plan` makes cost and assignments visible before execution.
-3. A six-trial controlled smoke run proves isolation and evidence capture.
-4. `cib report` turns only public and derived evidence into a self-contained
-   scientific summary with explicit claim boundaries.
-5. The user expands cases, placements, and repetitions deliberately.
+1. Copy `cib.example.yaml` and describe one routing condition, matched required
+   and unnecessary cases, and pass/fail thresholds.
+2. Run `cib check cib.yaml` locally or through the reusable GitHub Action.
+3. Read the ten-second decision at the top of the report.
+4. Inspect the collapsed scientific evidence when the decision needs diagnosis.
+5. Expand cases and repetitions deliberately; use `doctor`, `plan`, `study`,
+   and `report` directly only for advanced research workflows.
 
 ## Product principles
 
 - Make cost visible before calls.
+- Make the first useful path one command and one report.
 - Make the canonical proof obvious.
 - Refuse in-place reuse of scientific run directories.
 - Keep protected evidence local by default.
@@ -56,7 +60,8 @@ protocol running on Promptfoo or another declared execution backend.
 
 Near-term product success means:
 
-- a new user reaches a passing six-trial audit from the README;
+- a new user reaches a passing six-trial check from the README with one command;
+- a pull request can enforce declared thresholds with one reusable Action step;
 - setup failures are diagnosed before model calls;
 - every attempted trial has a durable raw record and canonical envelope;
 - a completed smoke run produces a safe report without exposing protected

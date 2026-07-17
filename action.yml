@@ -1,0 +1,128 @@
+name: CIB agent instruction check
+description: Run one evidence-backed routing check and upload its sanitized decision report.
+
+inputs:
+  config:
+    description: Path to cib.yaml, relative to the calling repository.
+    required: true
+  openai-api-key:
+    description: OpenAI API key supplied from a masked GitHub secret for CI-only Codex login.
+    required: true
+  artifact-name:
+    description: Name of the uploaded safe report artifact.
+    required: false
+    default: cib-agent-proof
+  retention-days:
+    description: Number of days to retain the safe report artifact.
+    required: false
+    default: "14"
+
+outputs:
+  verdict:
+    description: pass, fail, or invalid.
+    value: ${{ steps.check.outputs.verdict }}
+  exit-code:
+    description: "CIB exit code: 0 pass, 1 threshold failure, or 2 invalid evidence."
+    value: ${{ steps.check.outputs.exit-code }}
+  report-artifact:
+    description: Name of the uploaded safe report artifact.
+    value: ${{ inputs.artifact-name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.11"
+
+    - name: Set up Node
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: "22.22.0"
+
+    - name: Install locked CIB runtime
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        python -m pip install --disable-pip-version-check uv==0.9.25
+        uv sync --frozen --no-dev
+        npm install --global npm@11.11.1
+        if ! command -v codex >/dev/null 2>&1 || \
+          ! codex --version | grep -Fq "0.144.5"; then
+          npm install --global @openai/codex@0.144.5
+        fi
+        npm ci
+        echo "${GITHUB_ACTION_PATH}/.venv/bin" >> "${GITHUB_PATH}"
+        echo "${GITHUB_ACTION_PATH}/node_modules/.bin" >> "${GITHUB_PATH}"
+        echo "CIB_PYTHON=${GITHUB_ACTION_PATH}/.venv/bin/python" >> "${GITHUB_ENV}"
+
+    - name: Prepare isolated Codex authentication
+      id: auth
+      shell: bash
+      env:
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+      run: |
+        set -euo pipefail
+        auth_dir="${RUNNER_TEMP}/cib-codex-auth"
+        auth_path="${auth_dir}/auth.json"
+        mkdir -p "${auth_dir}"
+        printenv OPENAI_API_KEY | CODEX_HOME="${auth_dir}" \
+          codex login --with-api-key >/dev/null
+        test -f "${auth_path}"
+        chmod 0600 "${auth_path}"
+        echo "path=${auth_path}" >> "${GITHUB_OUTPUT}"
+
+    - name: Run CIB check
+      id: check
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        CIB_CONFIG_INPUT: ${{ inputs.config }}
+      run: |
+        set -euo pipefail
+        case "${CIB_CONFIG_INPUT}" in
+          /*) config_path="${CIB_CONFIG_INPUT}" ;;
+          *) config_path="${GITHUB_WORKSPACE}/${CIB_CONFIG_INPUT}" ;;
+        esac
+        output_dir="${RUNNER_TEMP}/cib-check-output"
+        set +e
+        cib check "${config_path}" \
+          --output-dir "${output_dir}" \
+          --auth "${{ steps.auth.outputs.path }}"
+        status=$?
+        set -e
+        python - "${output_dir}/check-result.json" "${GITHUB_OUTPUT}" "${status}" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        result_path = pathlib.Path(sys.argv[1])
+        output_path = pathlib.Path(sys.argv[2])
+        status = int(sys.argv[3])
+        verdict = "invalid"
+        if result_path.is_file():
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            verdict = result["verdict"]
+            status = int(result["exit_code"])
+        with output_path.open("a", encoding="utf-8") as output:
+            output.write(f"verdict={verdict}\n")
+            output.write(f"exit-code={status}\n")
+        PY
+
+    - name: Upload safe CIB report
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ runner.temp }}/cib-check-output/check-result.json
+          ${{ runner.temp }}/cib-check-output/report
+        if-no-files-found: warn
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Enforce CIB verdict
+      if: always()
+      shell: bash
+      run: exit "${{ steps.check.outputs.exit-code }}"

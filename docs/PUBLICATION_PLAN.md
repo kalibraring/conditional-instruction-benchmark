@@ -15,7 +15,8 @@ The release is allowed only when all checks pass:
 2. publication and independent secret scans report no findings;
 3. all deterministic tests pass from a clean environment;
 4. wheel and source distribution contain only intended files;
-5. `cib doctor` and zero-call `cib plan` work from the release checkout;
+5. `cib doctor`, zero-call `cib plan`, and a provider-boundary `cib check`
+   smoke work from the release checkout;
 6. package, CLI, changelog, citation, and tag versions agree;
 7. GitHub CI passes on the public commit;
 8. the tag-triggered release contains built artifacts and checksums.
@@ -43,7 +44,8 @@ The release is allowed only when all checks pass:
   reporting, secret scanning, and dependency alerts.
 - Push one reviewed `main` commit.
 - Wait for CI and inspect failures before tagging.
-- Create annotated tag `v0.2.0`; let the tag workflow create the GitHub release.
+- Create the version-matched annotated tag; let the tag workflow create the
+  GitHub release.
 - Verify repository metadata, topics, community profile, release assets, and
   fresh-clone behavior.
 
@@ -51,7 +53,8 @@ The release is allowed only when all checks pass:
 
 - Test onboarding with someone who did not build the project.
 - Create PyPI Trusted Publisher configuration with manual environment approval.
-- Add a synthetic provider-free demo and separate recovery command.
+- Keep the quota-free hosted Action smoke current and add a separate recovery
+  command.
 - Gather reproducibility reports before adding another agent adapter.
 
 ## Rollback

@@ -12,13 +12,16 @@ worth returning to.
 
 ## First-run experience
 
+- [x] Provide one `cib check` command that validates, runs, scores, reports, and
+  returns a CI-compatible verdict.
 - [x] Diagnose prerequisites before model calls with `cib doctor`.
 - [x] Preview trial count and assignments with `cib plan`.
 - [x] Provide one six-call smoke study and name its passing artifact.
 - [x] Generate self-contained JSON, Markdown, and HTML reports from public and
   derived evidence only.
 - [x] Explain cost and protected-data behavior before execution.
-- [ ] Add a synthetic no-provider demo that renders a complete sample report.
+- [x] Add a synthetic provider-boundary demo that renders a complete report in
+  hosted CI without model quota.
 
 ## Core reliability
 
@@ -39,6 +42,8 @@ worth returning to.
 
 ## Distribution and operations
 
+- [x] Publish a reusable GitHub Action with pinned dependencies,
+  least-privilege authentication, and sanitized artifact upload.
 - [x] Publish source, wheel, source distribution, checksums, and an annotated
   Git tag.
 - [x] Automate CI and GitHub release creation from version-matched tags.

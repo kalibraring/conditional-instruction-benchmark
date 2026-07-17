@@ -1,6 +1,7 @@
 # Roadmap
 
-The roadmap optimizes for trustworthy studies before breadth.
+The roadmap makes the scientific engine useful through one narrow developer
+workflow before expanding agent breadth.
 
 ## v0.2 — public foundation
 
@@ -22,7 +23,17 @@ The roadmap optimizes for trustworthy studies before breadth.
   analysis generated directly from canonical evidence envelopes.
 - Add small committed synthetic fixtures for adapter conformance.
 
-## v0.4 — portable agent comparison
+## v0.4 — one-command product wedge
+
+- Add a strict user-owned `cib.yaml` contract.
+- Run validation, execution, scoring, reporting, and threshold decisions through
+  one `cib check` command.
+- Put a plain-language `PASS`, `FAIL`, or `INVALID` decision above the detailed
+  scientific report.
+- Ship a reusable, least-privilege GitHub Action that uploads only sanitized
+  evidence.
+
+## v0.5 — portable agent comparison
 
 - Add one non-Codex adapter behind a capability declaration.
 - Map shared and unsupported instruction surfaces explicitly.
