@@ -11,6 +11,28 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.5.2] - 2026-07-18
+
+### Added
+
+- Copy one bounded, fresh signed-format cloud-config cache snapshot into each
+  isolated trial as a private 0600 file, with safe digest/freshness provenance.
+- Accept an explicit private cache source and minimum-validity window for frozen
+  scientific protocols.
+- Hash-seal Promptfoo configuration and test ledgers around execution.
+
+### Fixed
+
+- Recover Promptfoo-redacted per-trial timeout assignments only through a
+  complete, unique, index-consistent frozen test ledger.
+- Distinguish pre-session transport failures from evaluation timeouts.
+- Require sessions for completed trials, permit typed sessionless harness
+  failures, and reject duplicate sessions across all observed trials.
+- Preserve ledger-recovered timeout evidence separately from original protected
+  archives instead of synthesizing provenance.
+- Include untracked, non-ignored files in the pre-publication secret and
+  workstation-path scan.
+
 ## [0.5.1] - 2026-07-18
 
 ### Fixed
@@ -99,7 +121,8 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.2
 [0.5.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.0
 [0.4.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.4.0
