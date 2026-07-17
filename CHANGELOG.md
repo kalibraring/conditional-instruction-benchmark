@@ -6,6 +6,13 @@ compatibility boundary.
 
 ## [Unreleased]
 
+### Planned
+
+- Separate recovery-run command and development profile.
+- First non-Codex adapter capability spike.
+
+## [0.2.1] - 2026-07-17
+
 ### Fixed
 
 - Align contributors and CI on the npm 11.11.1 lockfile toolchain used by
@@ -14,11 +21,6 @@ compatibility boundary.
 ### Changed
 
 - Update the validated Codex SDK to 0.144.5 and Promptfoo to 0.121.19.
-
-### Planned
-
-- Separate recovery-run command and development profile.
-- First non-Codex adapter capability spike.
 
 ## [0.2.0] - 2026-07-17
 
@@ -39,5 +41,6 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.1
 [0.2.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.2.0
