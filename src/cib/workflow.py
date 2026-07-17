@@ -6,6 +6,7 @@ import os
 import signal
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -57,6 +58,16 @@ def promptfoo_command(
         "--no-progress-bar",
         "--no-table",
     ]
+
+
+def promptfoo_environment(run_dir: Path) -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["PROMPTFOO_CONFIG_DIR"] = str(
+        (run_dir / "promptfoo" / "state").resolve()
+    )
+    environment["CIB_PYTHON"] = sys.executable
+    environment["PROMPTFOO_DISABLE_TELEMETRY"] = "true"
+    return environment
 
 
 def run_promptfoo_study(
@@ -158,12 +169,16 @@ def run_promptfoo_study(
         },
         "timeout_scope": "none",
         "timeout_occurred": False,
+        "state_isolation": {
+            "promptfoo_config_dir": "per_run",
+        },
     }
     execution_path = run_dir / "execution.json"
     execution_path.write_text(json.dumps(execution, indent=2), encoding="utf-8")
     process = subprocess.Popen(
         command,
         cwd=project_root,
+        env=promptfoo_environment(run_dir),
         start_new_session=True,
     )
     outer_watchdog_timed_out = False

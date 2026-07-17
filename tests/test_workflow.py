@@ -1,6 +1,8 @@
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import time
 
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from cib.workflow import (
     derive_study_timeout_seconds,
     promptfoo_command,
+    promptfoo_environment,
     run_promptfoo_study,
 )
 
@@ -23,8 +26,69 @@ def test_scientific_promptfoo_command_forces_non_cached_non_shared_run(tmp_path:
     assert command[0] == str(binary.resolve())
     assert "--no-cache" in command
     assert "--no-share" in command
+    assert "--no-write" not in command
     assert command[command.index("--max-concurrency") + 1] == "7"
     assert command[command.index("--output") + 1] == str(results.resolve())
+
+
+def test_concurrent_promptfoo_processes_use_isolated_state_directories(
+    tmp_path: Path,
+) -> None:
+    project_root = Path(__file__).parents[1]
+    binary = project_root / "node_modules" / ".bin" / "promptfoo"
+    if not binary.is_file():
+        pytest.skip("run npm ci to exercise Promptfoo process isolation")
+    config = tmp_path / "echo.yaml"
+    config.write_text(
+        """description: process isolation proof
+prompts:
+  - "hello {{ value }}"
+providers:
+  - echo
+tests:
+  - vars:
+      value: world
+    assert:
+      - type: equals
+        value: hello world
+""",
+        encoding="utf-8",
+    )
+    processes = []
+    state_directories = []
+    for index in range(4):
+        run_dir = tmp_path / f"run-{index}"
+        environment = promptfoo_environment(run_dir)
+        assert environment["CIB_PYTHON"] == sys.executable
+        assert environment["PROMPTFOO_DISABLE_TELEMETRY"] == "true"
+        state_directories.append(environment["PROMPTFOO_CONFIG_DIR"])
+        processes.append(
+            subprocess.Popen(
+                [
+                    str(binary),
+                    "eval",
+                    "--config",
+                    str(config),
+                    "--output",
+                    str(tmp_path / f"result-{index}.json"),
+                    "--no-cache",
+                    "--no-share",
+                    "--no-progress-bar",
+                    "--no-table",
+                ],
+                cwd=project_root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+    outcomes = [process.communicate(timeout=30) for process in processes]
+    assert len(set(state_directories)) == 4
+    assert [process.returncode for process in processes] == [0, 0, 0, 0], outcomes
+    for index, state_directory in enumerate(state_directories):
+        assert (Path(state_directory) / "promptfoo.db").is_file()
+        assert (tmp_path / f"result-{index}.json").stat().st_size > 0
 
 
 def test_promptfoo_timeout_kills_stubborn_descendants_and_records_evidence(
