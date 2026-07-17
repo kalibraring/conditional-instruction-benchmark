@@ -35,7 +35,7 @@ jobs:
           cd dist
           shasum -a 256 * > SHA256SUMS
 
-      - name: Create immutable release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: >-
