@@ -4,8 +4,10 @@ import argparse
 import concurrent.futures
 import json
 import random
+import sys
 from pathlib import Path
 
+from . import __version__
 from .codex_adapter import CodexAdapter
 from .analysis import analyze, rebuild_summary
 from .tasks import CASES, case_ids, case_ids_for_layer
@@ -75,7 +77,14 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def _report(args: argparse.Namespace) -> int:
-    result = write_report(args.run_dir, args.output_dir)
+    try:
+        result = write_report(args.run_dir, args.output_dir)
+    except (FileExistsError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except Exception:
+        print("error: report generation failed", file=sys.stderr)
+        return 2
     print(json.dumps(result, indent=2))
     return 0
 
@@ -257,6 +266,7 @@ def _probe(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="cib")
+    parser.add_argument("--version", action="version", version=f"cib {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     calibrate = subparsers.add_parser("calibrate")
     calibrate.add_argument("--replicates", type=int, default=1)

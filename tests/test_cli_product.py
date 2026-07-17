@@ -9,6 +9,17 @@ import pytest
 ARMS = ("if", "iff", "if_else_not")
 
 
+def test_cli_prints_installed_version() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "cib 0.3.0"
+
+
 def _write_completed_study(run_dir: Path) -> str:
     run_id = "six-trial-report"
     run_dir.mkdir()
@@ -75,9 +86,16 @@ def _write_completed_study(run_dir: Path) -> str:
     audit = {
         "result_rows": 6,
         "unique_trial_ids": 6,
+        "duplicate_trial_ids": 0,
+        "protected_raw_files": 6,
+        "protected_source_rows": 6,
+        "missing_protected_raw": [],
+        "unexpected_protected_raw": [],
         "unique_session_ids": 6,
         "behavioral_successes": 4,
         "harness_failures": 0,
+        "promptfoo_cib_disagreements": [],
+        "archive_identity_disagreements": [],
         "passed": True,
     }
     (summary_dir / "audit.json").write_text(
@@ -106,9 +124,16 @@ def _write_audit(run_dir: Path, summary: list[dict[str, object]]) -> None:
     audit = {
         "result_rows": len(summary),
         "unique_trial_ids": len({str(row["trial_id"]) for row in summary}),
+        "duplicate_trial_ids": 0,
+        "protected_raw_files": len(summary),
+        "protected_source_rows": len(summary),
+        "missing_protected_raw": [],
+        "unexpected_protected_raw": [],
         "unique_session_ids": len(summary),
         "behavioral_successes": sum(bool(row["behavioral_success"]) for row in summary),
         "harness_failures": sum(bool(row["harness_failure"]) for row in summary),
+        "promptfoo_cib_disagreements": [],
+        "archive_identity_disagreements": [],
         "passed": True,
     }
     audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
@@ -250,6 +275,26 @@ def test_report_command_rejects_trial_identity_mismatch_before_writing(
     assert not (run_dir / "report").exists()
 
 
+def test_trial_identity_error_does_not_echo_derived_identifier(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    sensitive_id = "/" + "tmp/private-derived-id"
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["trial_id"] = sensitive_id
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Manifest and summary trial IDs disagree" in completed.stderr
+    assert sensitive_id not in completed.stdout + completed.stderr
+
+
 def test_report_command_rejects_assignment_identity_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -297,7 +342,21 @@ def test_report_command_reads_direct_backend_canonical_summary(tmp_path: Path) -
     direct_dir.mkdir()
     derived_dir = run_dir / "promptfoo" / "derived"
     (derived_dir / "summary.json").rename(direct_dir / "summary.json")
-    (derived_dir / "audit.json").rename(direct_dir / "audit.json")
+    direct_audit = {
+        "result_rows": 6,
+        "unique_trial_ids": 6,
+        "raw_files": 6,
+        "behavioral_successes": 4,
+        "harness_failures": 0,
+        "passed": True,
+    }
+    (direct_dir / "audit.json").write_text(
+        json.dumps(direct_audit), encoding="utf-8"
+    )
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = direct_audit
+    study_path.write_text(json.dumps(study), encoding="utf-8")
 
     completed = subprocess.run(
         [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
@@ -334,12 +393,23 @@ def test_report_command_rejects_undeclared_backend(tmp_path: Path) -> None:
     assert not (run_dir / "report").exists()
 
 
+@pytest.mark.parametrize(
+    "unsafe_run_id",
+    (
+        "/" + "Users/example/private-study",
+        "/" + "tmp/private-study",
+        "study at /" + "Volumes/Research/private-study",
+        "D:" + "\\private-study",
+        "study at D:" + "\\private-study",
+        "AKIA" + "A" * 16,
+    ),
+)
 def test_report_command_rejects_sensitive_text_in_public_manifest(
     tmp_path: Path,
+    unsafe_run_id: str,
 ) -> None:
     run_dir = tmp_path / "run"
     _write_completed_study(run_dir)
-    unsafe_run_id = "/" + "Users/example/private-study"
     manifest_path = run_dir / "run-manifest.jsonl"
     manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()]
     for row in manifest:
@@ -360,6 +430,69 @@ def test_report_command_rejects_sensitive_text_in_public_manifest(
 
     assert completed.returncode != 0
     assert "Unsafe text in public manifest field run_id" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_rejects_non_boolean_outcome(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["behavioral_success"] = "false"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "behavioral_success must be a boolean" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_recomputes_audit_outcome_counts(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    audit["behavioral_successes"] = 99
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Audit outcome counts disagree with derived summary" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_rejects_symlinked_canonical_input(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    protected_path = run_dir / "promptfoo" / "protected" / "raw" / "secret.json"
+    protected_path.parent.mkdir(parents=True)
+    protected_path.write_text(summary_path.read_text(), encoding="utf-8")
+    summary_path.unlink()
+    summary_path.symlink_to(protected_path)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Canonical report input must not be a symlink" in completed.stderr
     assert not (run_dir / "report").exists()
 
 
@@ -391,6 +524,33 @@ def test_incomplete_design_is_not_labeled_as_six_trial_smoke(tmp_path: Path) -> 
     )
     assert report["claim"]["status"] == "descriptive_only"
     assert "six-trial smoke design" not in rendered
+
+
+def test_incomplete_randomization_is_not_labeled_as_smoke(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    manifest_path = run_dir / "run-manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    manifest[-1]["random_order"] = manifest[-2]["random_order"]
+    manifest_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in manifest), encoding="utf-8"
+    )
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[-1]["random_order"] = summary[-2]["random_order"]
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    assert report["run"]["randomization"]["complete_permutation"] is False
+    assert report["claim"]["status"] == "descriptive_only"
 
 
 def test_report_stratifies_contrasts_by_instruction_placement(tmp_path: Path) -> None:
