@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ARMS = ("if", "iff", "if_else_not")
 
@@ -50,6 +52,11 @@ def _write_completed_study(run_dir: Path) -> str:
             {
                 "trial_id": trial_id,
                 "random_order": order,
+                "arm": arm,
+                "condition_true": truth,
+                "case_id": "literal_flag",
+                "case_variant": 0,
+                "placement": "prompt_start",
                 "behavioral_success": outcomes[(arm, truth)],
                 "harness_failure": False,
                 "session_id": f"private-session-{order}",
@@ -93,6 +100,24 @@ def _write_completed_study(run_dir: Path) -> str:
         encoding="utf-8",
     )
     return run_id
+
+
+def _write_audit(run_dir: Path, summary: list[dict[str, object]]) -> None:
+    audit = {
+        "result_rows": len(summary),
+        "unique_trial_ids": len({str(row["trial_id"]) for row in summary}),
+        "unique_session_ids": len(summary),
+        "behavioral_successes": sum(bool(row["behavioral_success"]) for row in summary),
+        "harness_failures": sum(bool(row["harness_failure"]) for row in summary),
+        "passed": True,
+    }
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit_path.write_text(json.dumps(audit, indent=2), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["execution"]["trial_count"] = len(summary)
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study, indent=2), encoding="utf-8")
 
 
 def test_plan_command_writes_six_trials_without_model_call(tmp_path: Path) -> None:
@@ -144,32 +169,61 @@ def test_report_command_writes_safe_self_contained_reports(tmp_path: Path) -> No
     report_dir = run_dir / "report"
     assert command_result == {
         "run_id": run_id,
-        "report_json": str(report_dir / "report.json"),
-        "report_markdown": str(report_dir / "report.md"),
-        "report_html": str(report_dir / "report.html"),
+        "report_json": "report/report.json",
+        "report_markdown": "report/report.md",
+        "report_html": "report/report.html",
     }
     report = json.loads((report_dir / "report.json").read_text())
     assert report["schema_version"] == "cib-report/1"
     assert report["provenance"]["generator_version"] == "0.3.0"
     assert report["claim"]["status"] == "exploratory_smoke"
-    assert next(
-        cell
+    assert report["run"]["cases"] == [
+        {"case_id": "literal_flag", "variants": [0]}
+    ]
+    assert report["run"]["block_ids"] == ["prompt_start:literal_flag:000"]
+    assert report["run"]["randomization"] == {
+        "orders": [0, 1, 2, 3, 4, 5],
+        "complete_permutation": True,
+    }
+    expected_rates = {
+        ("if", True): 1.0,
+        ("if", False): 0.0,
+        ("iff", True): 1.0,
+        ("iff", False): 1.0,
+        ("if_else_not", True): 0.0,
+        ("if_else_not", False): 1.0,
+    }
+    assert {
+        (cell["arm"], cell["condition_true"]): cell["rate"]
         for cell in report["cells"]
-        if cell["arm"] == "if" and cell["condition_true"] is False
-    )["rate"] == 0.0
-    assert next(
-        contrast
+    } == expected_rates
+    success_cell = next(cell for cell in report["cells"] if cell["rate"] == 1.0)
+    failure_cell = next(cell for cell in report["cells"] if cell["rate"] == 0.0)
+    assert success_cell["wilson_low"] == pytest.approx(0.20654931437723745)
+    assert success_cell["wilson_high"] == 1.0
+    assert failure_cell["wilson_low"] == 0.0
+    assert failure_cell["wilson_high"] == pytest.approx(0.7934506856227626)
+    expected_contrasts = {
+        ("operational_iff_minus_if", True): 0.0,
+        ("boundary_expanded_minus_if", True): -1.0,
+        ("form_iff_minus_expanded", True): 1.0,
+        ("operational_iff_minus_if", False): 1.0,
+        ("boundary_expanded_minus_if", False): 1.0,
+        ("form_iff_minus_expanded", False): 0.0,
+    }
+    assert {
+        (contrast["contrast"], contrast["condition_true"]): contrast[
+            "risk_difference"
+        ]
         for contrast in report["contrasts"]
-        if contrast["contrast"] == "operational_iff_minus_if"
-        and contrast["condition_true"] is False
-    )["risk_difference"] == 1.0
+    } == expected_contrasts
     markdown = (report_dir / "report.md").read_text()
     html = (report_dir / "report.html").read_text()
     assert "# Conditional Instruction Benchmark report" in markdown
     assert "<!doctype html>" in html.lower()
     assert "<style>" in html
     assert "<script" not in html
-    public_reports = json.dumps(report) + markdown + html
+    public_reports = completed.stdout + json.dumps(report) + markdown + html
     assert "private-nonce-value" not in public_reports
     assert "private-session" not in public_reports
     assert "/" + "Users/example" not in public_reports
@@ -193,6 +247,27 @@ def test_report_command_rejects_trial_identity_mismatch_before_writing(
 
     assert completed.returncode != 0
     assert "Manifest and summary trial IDs disagree" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_rejects_assignment_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["arm"] = "iff"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "assignment fields disagree" in completed.stderr
     assert not (run_dir / "report").exists()
 
 
@@ -232,6 +307,134 @@ def test_report_command_reads_direct_backend_canonical_summary(tmp_path: Path) -
     )
 
     result = json.loads(completed.stdout)
-    report = json.loads(Path(result["report_json"]).read_text())
+    report = json.loads((run_dir / result["report_json"]).read_text())
     assert report["run"]["backend"] == "direct-codex"
     assert report["integrity"]["passed"] is True
+
+
+def test_report_command_rejects_undeclared_backend(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    manifest_path = run_dir / "run-manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    for row in manifest:
+        row["target_adapter"] = "undeclared-agent"
+    manifest_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in manifest), encoding="utf-8"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Unsupported report backend" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_rejects_sensitive_text_in_public_manifest(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    unsafe_run_id = "/" + "Users/example/private-study"
+    manifest_path = run_dir / "run-manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    for row in manifest:
+        row["run_id"] = unsafe_run_id
+    manifest_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in manifest), encoding="utf-8"
+    )
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["execution"]["run_id"] = unsafe_run_id
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Unsafe text in public manifest field run_id" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_incomplete_design_is_not_labeled_as_six_trial_smoke(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    manifest_path = run_dir / "run-manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()][:-1]
+    manifest_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in manifest), encoding="utf-8"
+    )
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())[:-1]
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _write_audit(run_dir, summary)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    rendered = (
+        (run_dir / result["report_markdown"]).read_text()
+        + (run_dir / result["report_html"]).read_text()
+    )
+    assert report["claim"]["status"] == "descriptive_only"
+    assert "six-trial smoke design" not in rendered
+
+
+def test_report_stratifies_contrasts_by_instruction_placement(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    manifest_path = run_dir / "run-manifest.jsonl"
+    manifest = [json.loads(line) for line in manifest_path.read_text().splitlines()]
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    for row in list(manifest):
+        clone = dict(row)
+        clone["trial_id"] = f"{row['trial_id']}-skill-body"
+        clone["random_order"] = int(row["random_order"]) + 6
+        clone["placement"] = "skill_body"
+        clone["block_id"] = "skill_body:literal_flag:000"
+        manifest.append(clone)
+    for row in list(summary):
+        clone = dict(row)
+        clone["trial_id"] = f"{row['trial_id']}-skill-body"
+        clone["random_order"] = int(row["random_order"]) + 6
+        clone["placement"] = "skill_body"
+        clone["behavioral_success"] = False
+        clone["session_id"] = f"{row['session_id']}-skill-body"
+        summary.append(clone)
+    manifest_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in manifest), encoding="utf-8"
+    )
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _write_audit(run_dir, summary)
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    result = json.loads(completed.stdout)
+    report = json.loads((run_dir / result["report_json"]).read_text())
+    false_iff_if = {
+        row["placement"]: row["risk_difference"]
+        for row in report["contrasts"]
+        if row["contrast"] == "operational_iff_minus_if"
+        and row["condition_true"] is False
+    }
+    assert false_iff_if == {"prompt_start": 1.0, "skill_body": 0.0}
+    assert all(row["missing_task_families"] == [] for row in report["contrasts"])

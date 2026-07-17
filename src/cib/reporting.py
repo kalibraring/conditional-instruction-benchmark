@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import math
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,6 +16,37 @@ from .analysis import CONTRASTS, task_weighted_difference, wilson_interval
 
 REPORT_SCHEMA_VERSION = "cib-report/1"
 ARMS = ("if", "iff", "if_else_not")
+IDENTITY_FIELDS = (
+    "random_order",
+    "arm",
+    "condition_true",
+    "case_id",
+    "case_variant",
+    "placement",
+)
+BACKEND_LAYOUTS = {
+    "direct-codex": ("direct/summary.json", "direct/audit.json"),
+    "promptfoo-codex-sdk": (
+        "promptfoo/derived/summary.json",
+        "promptfoo/derived/audit.json",
+    ),
+}
+UNSAFE_PUBLIC_TEXT = re.compile(
+    r"(?:/(?:Users|home)/[^/\s]+/|[A-Za-z]:\\Users\\|"
+    r"(?:github_pat_|gh[opsu]_)[A-Za-z0-9_]{20,}|"
+    r"\bsk-[A-Za-z0-9_-]{20,}|BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY)"
+)
+PUBLIC_TEXT_FIELDS = (
+    "run_id",
+    "block_id",
+    "case_id",
+    "placement",
+    "model",
+    "reasoning_effort",
+    "target_adapter",
+    "protocol_version",
+    "profile",
+)
 
 
 def write_report(run_dir: Path, output_dir: Path | None = None) -> dict[str, str]:
@@ -35,11 +67,12 @@ def write_report(run_dir: Path, output_dir: Path | None = None) -> dict[str, str
     except BaseException:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
+    display_base = target if output_dir is not None else run_dir
     return {
         "run_id": str(report["run"]["run_id"]),
-        "report_json": str(target / "report.json"),
-        "report_markdown": str(target / "report.md"),
-        "report_html": str(target / "report.html"),
+        "report_json": _display_path(target / "report.json", display_base),
+        "report_markdown": _display_path(target / "report.md", display_base),
+        "report_html": _display_path(target / "report.html", display_base),
     }
 
 
@@ -49,15 +82,18 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     manifest = _load_manifest(manifest_path)
     study = _load_json(study_path)
     backend = _single_value(manifest, "target_adapter")
-    if backend == "direct-codex":
-        summary_path = run_dir / "direct" / "summary.json"
-        audit_path = run_dir / "direct" / "audit.json"
-    else:
-        summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
-        audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    if backend not in BACKEND_LAYOUTS:
+        raise ValueError(f"Unsupported report backend: {backend}")
+    summary_name, audit_name = BACKEND_LAYOUTS[backend]
+    summary_path = run_dir / summary_name
+    audit_path = run_dir / audit_name
     summary = _load_json(summary_path)
     audit = _load_json(audit_path)
-    if not isinstance(summary, list) or not isinstance(audit, dict):
+    if (
+        not isinstance(study, dict)
+        or not isinstance(summary, list)
+        or not isinstance(audit, dict)
+    ):
         raise ValueError("Study summary or audit has an invalid shape")
     if audit != study.get("audit"):
         raise ValueError("Study result and canonical audit disagree")
@@ -75,6 +111,29 @@ def build_report(run_dir: Path) -> dict[str, Any]:
         )
 
     outcomes = {str(row["trial_id"]): row for row in summary}
+    for manifest_row in manifest:
+        trial_id = str(manifest_row["trial_id"])
+        summary_row = outcomes[trial_id]
+        disagreements = [
+            field
+            for field in IDENTITY_FIELDS
+            if summary_row.get(field) != manifest_row.get(field)
+        ]
+        if disagreements:
+            raise ValueError(
+                f"Manifest and summary assignment fields disagree for {trial_id}: "
+                f"{disagreements}"
+            )
+    execution = study.get("execution") or {}
+    run_id = _single_value(manifest, "run_id")
+    if execution.get("run_id") != run_id:
+        raise ValueError("Study result and public manifest run IDs disagree")
+    if int(execution.get("trial_count", -1)) != len(manifest):
+        raise ValueError("Study result trial count disagrees with public manifest")
+    if int(audit.get("result_rows", -1)) != len(summary):
+        raise ValueError("Audit result count disagrees with derived summary")
+    if int(audit.get("unique_trial_ids", -1)) != len(set(summary_ids)):
+        raise ValueError("Audit identity count disagrees with derived summary")
     rows = [
         {
             "trial_id": row["trial_id"],
@@ -93,7 +152,15 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     cells = _cells(rows)
     contrasts = _contrasts(rows, cases)
     block_count = len({str(row["block_id"]) for row in manifest})
-    is_smoke = len(cases) == 1 and block_count == 1
+    placements = sorted({str(row["placement"]) for row in rows})
+    is_smoke = (
+        len(rows) == 6
+        and len(cases) == 1
+        and len(placements) == 1
+        and block_count == 1
+        and len(cells) == 6
+        and all(cell["n"] == 1 for cell in cells)
+    )
     claim = {
         "status": "exploratory_smoke" if is_smoke else "descriptive_only",
         "statement": (
@@ -103,8 +170,15 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             else "This report is descriptive. Confirmatory claims require a frozen "
             "preregistration and its declared inference procedure."
         ),
+        "contrast_note": (
+            "Contrasts use equal task-family weighting and are descriptive. The "
+            "six-trial smoke design does not support a general causal claim."
+            if is_smoke
+            else "Contrasts use equal task-family weighting and remain descriptive. "
+            "Confirmatory interpretation requires the run's preregistered inference "
+            "and missingness policy."
+        ),
     }
-    execution = study.get("execution") or {}
     integrity = {
         "passed": bool(audit.get("passed", False)),
         "result_rows": int(audit.get("result_rows", len(summary))),
@@ -125,7 +199,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run": {
-            "run_id": _single_value(manifest, "run_id"),
+            "run_id": run_id,
             "protocol_version": _single_value(manifest, "protocol_version"),
             "profile": _single_value(manifest, "profile"),
             "backend": backend,
@@ -133,8 +207,29 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             "reasoning_effort": _single_value(manifest, "reasoning_effort"),
             "trial_count": len(rows),
             "task_families": len(cases),
-            "placements": sorted({str(row["placement"]) for row in rows}),
+            "cases": [
+                {
+                    "case_id": case_id,
+                    "variants": sorted(
+                        {
+                            int(row["case_variant"])
+                            for row in manifest
+                            if row["case_id"] == case_id
+                        }
+                    ),
+                }
+                for case_id in cases
+            ],
+            "placements": placements,
             "blocks": block_count,
+            "block_ids": sorted({str(row["block_id"]) for row in manifest}),
+            "randomization": {
+                "orders": sorted(int(row["random_order"]) for row in manifest),
+                "complete_permutation": sorted(
+                    int(row["random_order"]) for row in manifest
+                )
+                == list(range(len(manifest))),
+            },
             "duration_seconds": execution.get("duration_seconds"),
         },
         "integrity": integrity,
@@ -187,6 +282,8 @@ def _load_manifest(path: Path) -> list[dict[str, Any]]:
             raise ValueError(f"Public manifest row is missing fields: {missing}")
         if row["arm"] not in ARMS:
             raise ValueError(f"Unsupported instruction arm: {row['arm']}")
+        for field in PUBLIC_TEXT_FIELDS:
+            _validate_public_text(str(row[field]), field)
     return rows
 
 
@@ -208,34 +305,38 @@ def _require_unique(values: list[str], source: str) -> None:
 
 def _cells(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    for truth in (True, False):
-        for arm in ARMS:
-            members = [
-                row
-                for row in rows
-                if row["arm"] == arm and row["condition_true"] is truth
-            ]
-            if not members:
-                continue
-            successes = sum(row["success"] for row in members)
-            low, high = wilson_interval(successes, len(members))
-            output.append(
-                {
-                    "estimand": (
-                        "necessary_use" if truth else "avoided_unnecessary_use"
-                    ),
-                    "condition_true": truth,
-                    "arm": arm,
-                    "n": len(members),
-                    "successes": successes,
-                    "rate": successes / len(members),
-                    "wilson_low": low,
-                    "wilson_high": high,
-                    "harness_failures": sum(
-                        row["harness_failure"] for row in members
-                    ),
-                }
-            )
+    for placement in sorted({str(row["placement"]) for row in rows}):
+        for truth in (True, False):
+            for arm in ARMS:
+                members = [
+                    row
+                    for row in rows
+                    if row["placement"] == placement
+                    and row["arm"] == arm
+                    and row["condition_true"] is truth
+                ]
+                if not members:
+                    continue
+                successes = sum(row["success"] for row in members)
+                low, high = wilson_interval(successes, len(members))
+                output.append(
+                    {
+                        "placement": placement,
+                        "estimand": (
+                            "necessary_use" if truth else "avoided_unnecessary_use"
+                        ),
+                        "condition_true": truth,
+                        "arm": arm,
+                        "n": len(members),
+                        "successes": successes,
+                        "rate": successes / len(members),
+                        "wilson_low": low,
+                        "wilson_high": high,
+                        "harness_failures": sum(
+                            row["harness_failure"] for row in members
+                        ),
+                    }
+                )
     return output
 
 
@@ -243,26 +344,48 @@ def _contrasts(
     rows: list[dict[str, Any]], cases: list[str]
 ) -> list[dict[str, Any]]:
     output: list[dict[str, Any]] = []
-    for truth in (True, False):
-        subset = [row for row in rows if row["condition_true"] is truth]
-        for name, treatment, reference in CONTRASTS:
-            difference = task_weighted_difference(
-                subset, cases, treatment, reference
-            )
-            output.append(
-                {
-                    "estimand": (
-                        "necessary_use" if truth else "avoided_unnecessary_use"
-                    ),
-                    "condition_true": truth,
-                    "contrast": name,
-                    "treatment": treatment,
-                    "reference": reference,
-                    "risk_difference": None if math.isnan(difference) else difference,
-                    "task_families": len(cases),
-                    "inference": "descriptive_task_family_weighted",
-                }
-            )
+    for placement in sorted({str(row["placement"]) for row in rows}):
+        for truth in (True, False):
+            subset = [
+                row
+                for row in rows
+                if row["placement"] == placement
+                and row["condition_true"] is truth
+            ]
+            for name, treatment, reference in CONTRASTS:
+                eligible = [
+                    case_id
+                    for case_id in cases
+                    if any(
+                        row["case_id"] == case_id and row["arm"] == treatment
+                        for row in subset
+                    )
+                    and any(
+                        row["case_id"] == case_id and row["arm"] == reference
+                        for row in subset
+                    )
+                ]
+                difference = task_weighted_difference(
+                    subset, eligible, treatment, reference
+                )
+                output.append(
+                    {
+                        "placement": placement,
+                        "estimand": (
+                            "necessary_use" if truth else "avoided_unnecessary_use"
+                        ),
+                        "condition_true": truth,
+                        "contrast": name,
+                        "treatment": treatment,
+                        "reference": reference,
+                        "risk_difference": (
+                            None if math.isnan(difference) else difference
+                        ),
+                        "task_families": len(eligible),
+                        "missing_task_families": sorted(set(cases) - set(eligible)),
+                        "inference": "descriptive_task_family_weighted",
+                    }
+                )
     return output
 
 
@@ -277,6 +400,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Backend: `{run['backend']}`  ",
         f"Model: `{run['model']}` · Reasoning: `{run['reasoning_effort']}`  ",
         f"Placement(s): {', '.join(f'`{value}`' for value in run['placements'])}  ",
+        f"Task families: {_case_summary(run['cases'])}  ",
+        f"Blocks: {run['blocks']} · Randomization complete: "
+        f"{'yes' if run['randomization']['complete_permutation'] else 'no'}  ",
+        f"Duration: {_duration(run['duration_seconds'])}  ",
         f"Trials: {run['trial_count']} across {run['task_families']} task family/families",
         "",
         "## Claim boundary",
@@ -293,12 +420,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Outcomes",
         "",
-        "| Estimand | Arm | Success | Rate | 95% Wilson interval | Harness failures |",
-        "|---|---|---:|---:|---:|---:|",
+        "| Placement | Estimand | Arm | Success | Rate | 95% Wilson interval | Harness failures |",
+        "|---|---|---|---:|---:|---:|---:|",
     ]
     for cell in report["cells"]:
         lines.append(
-            f"| {_label(cell['estimand'])} | `{cell['arm']}` | "
+            f"| `{cell['placement']}` | {_label(cell['estimand'])} | `{cell['arm']}` | "
             f"{cell['successes']}/{cell['n']} | {_percent(cell['rate'])} | "
             f"{_percent(cell['wilson_low'])}–{_percent(cell['wilson_high'])} | "
             f"{cell['harness_failures']} |"
@@ -308,21 +435,20 @@ def render_markdown(report: dict[str, Any]) -> str:
             "",
             "## Descriptive contrasts",
             "",
-            "| Estimand | Contrast | Risk difference | Task families |",
-            "|---|---|---:|---:|",
+            "| Placement | Estimand | Contrast | Risk difference | Task families | Missing families |",
+            "|---|---|---|---:|---:|---|",
         ]
     )
     for contrast in report["contrasts"]:
         lines.append(
-            f"| {_label(contrast['estimand'])} | `{contrast['treatment']} − "
+            f"| `{contrast['placement']}` | {_label(contrast['estimand'])} | `{contrast['treatment']} − "
             f"{contrast['reference']}` | {_signed_percent(contrast['risk_difference'])} | "
-            f"{contrast['task_families']} |"
+            f"{contrast['task_families']} | {_missing_markdown(contrast['missing_task_families'])} |"
         )
     lines.extend(
         [
             "",
-            "Contrasts use equal task-family weighting and are descriptive. The "
-            "six-trial smoke design does not support a general causal claim.",
+            report["claim"]["contrast_note"],
             "",
             "## Reproducibility",
             "",
@@ -335,10 +461,11 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 
 def render_html(report: dict[str, Any]) -> str:
-    markdown_sections = []
+    outcome_rows = []
     for cell in report["cells"]:
-        markdown_sections.append(
+        outcome_rows.append(
             "<tr>"
+            f"<td><code>{html.escape(cell['placement'])}</code></td>"
             f"<td>{html.escape(_label(cell['estimand']))}</td>"
             f"<td><code>{html.escape(cell['arm'])}</code></td>"
             f"<td>{cell['successes']}/{cell['n']}</td>"
@@ -351,11 +478,13 @@ def render_html(report: dict[str, Any]) -> str:
     for contrast in report["contrasts"]:
         contrast_rows.append(
             "<tr>"
+            f"<td><code>{html.escape(contrast['placement'])}</code></td>"
             f"<td>{html.escape(_label(contrast['estimand']))}</td>"
             f"<td><code>{html.escape(contrast['treatment'])} − "
             f"{html.escape(contrast['reference'])}</code></td>"
             f"<td>{_signed_percent(contrast['risk_difference'])}</td>"
             f"<td>{contrast['task_families']}</td>"
+            f"<td>{html.escape(_missing_text(contrast['missing_task_families']))}</td>"
             "</tr>"
         )
     sources = "".join(
@@ -389,6 +518,8 @@ code {{ overflow-wrap: anywhere; }}
 <strong>Backend:</strong> <code>{html.escape(str(run['backend']))}</code><br>
 <strong>Model:</strong> <code>{html.escape(str(run['model']))}</code> · <strong>Reasoning:</strong> <code>{html.escape(str(run['reasoning_effort']))}</code><br>
 <strong>Placement(s):</strong> {', '.join(f'<code>{html.escape(value)}</code>' for value in run['placements'])}<br>
+<strong>Task families:</strong> {html.escape(_case_summary(run['cases']))}<br>
+<strong>Blocks:</strong> {run['blocks']} · <strong>Randomization complete:</strong> {'yes' if run['randomization']['complete_permutation'] else 'no'} · <strong>Duration:</strong> {html.escape(_duration(run['duration_seconds']))}<br>
 <strong>Trials:</strong> {run['trial_count']} across {run['task_families']} task family/families</div>
 <h2>Claim boundary</h2>
 <p class="callout"><strong>{html.escape(report['claim']['status'])}</strong> — {html.escape(report['claim']['statement'])}</p>
@@ -397,12 +528,12 @@ code {{ overflow-wrap: anywhere; }}
 Unique trials: {integrity['unique_trial_ids']} · Harness failures: {integrity['harness_failures']} ·
 Scorer disagreements: {integrity['scorer_disagreements']} · Identity disagreements: {integrity['identity_disagreements']}</p>
 <h2>Outcomes</h2>
-<table><thead><tr><th>Estimand</th><th>Arm</th><th>Success</th><th>Rate</th><th>95% Wilson interval</th><th>Harness failures</th></tr></thead>
-<tbody>{''.join(markdown_sections)}</tbody></table>
+<table><thead><tr><th>Placement</th><th>Estimand</th><th>Arm</th><th>Success</th><th>Rate</th><th>95% Wilson interval</th><th>Harness failures</th></tr></thead>
+<tbody>{''.join(outcome_rows)}</tbody></table>
 <h2>Descriptive contrasts</h2>
-<table><thead><tr><th>Estimand</th><th>Contrast</th><th>Risk difference</th><th>Task families</th></tr></thead>
+<table><thead><tr><th>Placement</th><th>Estimand</th><th>Contrast</th><th>Risk difference</th><th>Task families</th><th>Missing families</th></tr></thead>
 <tbody>{''.join(contrast_rows)}</tbody></table>
-<p>Contrasts use equal task-family weighting and are descriptive. The six-trial smoke design does not support a general causal claim.</p>
+<p>{html.escape(report['claim']['contrast_note'])}</p>
 <h2>Reproducibility</h2>
 <ul>{sources}</ul>
 <p>{html.escape(report['provenance']['privacy_boundary'])}</p>
@@ -420,6 +551,17 @@ def _relative_source(run_dir: Path, path: Path) -> str:
     return path.relative_to(run_dir).as_posix()
 
 
+def _display_path(path: Path, base: Path) -> str:
+    return path.relative_to(base).as_posix()
+
+
+def _validate_public_text(value: str, field: str) -> None:
+    if any(ord(character) < 32 for character in value) or UNSAFE_PUBLIC_TEXT.search(
+        value
+    ):
+        raise ValueError(f"Unsafe text in public manifest field {field}")
+
+
 def _percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.1%}"
 
@@ -430,3 +572,22 @@ def _signed_percent(value: float | None) -> str:
 
 def _label(value: str) -> str:
     return value.replace("_", " ").title()
+
+
+def _missing_markdown(values: list[str]) -> str:
+    return "none" if not values else ", ".join(f"`{value}`" for value in values)
+
+
+def _missing_text(values: list[str]) -> str:
+    return "none" if not values else ", ".join(values)
+
+
+def _case_summary(cases: list[dict[str, Any]]) -> str:
+    return ", ".join(
+        f"{case['case_id']} (variant(s) {', '.join(str(value) for value in case['variants'])})"
+        for case in cases
+    )
+
+
+def _duration(value: float | int | None) -> str:
+    return "n/a" if value is None else f"{float(value):.1f}s"

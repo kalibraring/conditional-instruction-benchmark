@@ -24,9 +24,10 @@ must not assert private implementation calls.
    task-family-weighted contrasts, and explicit claim boundaries.
 4. It verifies exact trial identity between the public manifest and derived
    summary before writing anything.
-5. It never reads or reproduces private manifests, protected raw responses,
-   nonces, session identifiers, provider transcripts, credentials, or absolute
-   workstation paths.
+5. It never opens private manifests or protected raw responses. From the
+   required public and derived inputs, it never reproduces nonces, session
+   identifiers, provider transcripts, credentials, or absolute workstation
+   paths in report files or CLI output.
 6. It refuses to replace an existing report directory.
 7. The README documents the complete six-trial path and identifies the report
    files that prove success.
