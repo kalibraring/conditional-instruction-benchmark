@@ -68,6 +68,7 @@ def _write_completed_study(run_dir: Path) -> str:
                 "case_id": "literal_flag",
                 "case_variant": 0,
                 "placement": "prompt_start",
+                "promptfoo_success": outcomes[(arm, truth)],
                 "behavioral_success": outcomes[(arm, truth)],
                 "harness_failure": False,
                 "session_id": f"private-session-{order}",
@@ -399,8 +400,11 @@ def test_report_command_rejects_undeclared_backend(tmp_path: Path) -> None:
         "/" + "Users/example/private-study",
         "/" + "tmp/private-study",
         "study at /" + "Volumes/Research/private-study",
+        "model=/" + "tmp/private-study",
+        "path:/" + "opt/internal-study",
         "D:" + "\\private-study",
         "study at D:" + "\\private-study",
+        "model=D:" + "\\private-study",
         "AKIA" + "A" * 16,
     ),
 )
@@ -452,6 +456,27 @@ def test_report_command_rejects_non_boolean_outcome(tmp_path: Path) -> None:
     assert not (run_dir / "report").exists()
 
 
+def test_report_command_does_not_echo_malformed_numeric_value(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    sensitive_value = "/" + "tmp/private-session"
+    study["execution"]["trial_count"] = sensitive_value
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert sensitive_value not in completed.stdout + completed.stderr
+    assert "report validation failed" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
 def test_report_command_recomputes_audit_outcome_counts(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     _write_completed_study(run_dir)
@@ -472,6 +497,69 @@ def test_report_command_recomputes_audit_outcome_counts(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "Audit outcome counts disagree with derived summary" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_recomputes_promptfoo_session_uniqueness(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[1]["session_id"] = summary[0]["session_id"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "session count disagrees" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_recomputes_promptfoo_scorer_disagreement(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    summary_path = run_dir / "promptfoo" / "derived" / "summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary[0]["promptfoo_success"] = not summary[0]["behavioral_success"]
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "scorer disagreements disagree" in completed.stderr
+    assert not (run_dir / "report").exists()
+
+
+def test_report_command_requires_all_promptfoo_audit_fields(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    _write_completed_study(run_dir)
+    audit_path = run_dir / "promptfoo" / "derived" / "audit.json"
+    audit = json.loads(audit_path.read_text())
+    del audit["archive_identity_disagreements"]
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    study_path = run_dir / "study-result.json"
+    study = json.loads(study_path.read_text())
+    study["audit"] = audit
+    study_path.write_text(json.dumps(study), encoding="utf-8")
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cib.cli", "report", str(run_dir)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "must be a list" in completed.stderr
     assert not (run_dir / "report").exists()
 
 
@@ -572,6 +660,7 @@ def test_report_stratifies_contrasts_by_instruction_placement(tmp_path: Path) ->
         clone["trial_id"] = f"{row['trial_id']}-skill-body"
         clone["random_order"] = int(row["random_order"]) + 6
         clone["placement"] = "skill_body"
+        clone["promptfoo_success"] = False
         clone["behavioral_success"] = False
         clone["session_id"] = f"{row['session_id']}-skill-body"
         summary.append(clone)

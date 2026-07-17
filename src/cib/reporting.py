@@ -37,7 +37,8 @@ UNSAFE_PUBLIC_TEXT = re.compile(
     r"\bAKIA[0-9A-Z]{16}\b)"
 )
 ABSOLUTE_PATH_FRAGMENT = re.compile(
-    r"(?:^|[\s'\"(])(?:/[A-Za-z0-9_.~+-]|[A-Za-z]:[\\/])"
+    r"(?:^|[^A-Za-z0-9_.~+/\\-])"
+    r"(?:/{1,3}[A-Za-z0-9_.~+-]|[A-Za-z]:[\\/])"
 )
 PUBLIC_TEXT_FIELDS = (
     "run_id",
@@ -52,6 +53,10 @@ PUBLIC_TEXT_FIELDS = (
     "protocol_version",
     "profile",
 )
+
+
+class ReportValidationError(ValueError):
+    """A validation failure whose message is safe to show on the CLI."""
 
 
 def write_report(run_dir: Path, output_dir: Path | None = None) -> dict[str, str]:
@@ -88,7 +93,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     study = _load_json(study_path, run_dir)
     backend = _single_value(manifest, "target_adapter")
     if backend not in BACKEND_LAYOUTS:
-        raise ValueError("Unsupported report backend")
+        raise ReportValidationError("Unsupported report backend")
     summary_name, audit_name = BACKEND_LAYOUTS[backend]
     summary_path = run_dir / summary_name
     audit_path = run_dir / audit_name
@@ -99,16 +104,16 @@ def build_report(run_dir: Path) -> dict[str, Any]:
         or not isinstance(summary, list)
         or not isinstance(audit, dict)
     ):
-        raise ValueError("Study summary or audit has an invalid shape")
+        raise ReportValidationError("Study summary or audit has an invalid shape")
     if audit != study.get("audit"):
-        raise ValueError("Study result and canonical audit disagree")
+        raise ReportValidationError("Study result and canonical audit disagree")
 
     manifest_ids = [str(row["trial_id"]) for row in manifest]
     summary_ids = [str(row.get("trial_id")) for row in summary]
     _require_unique(manifest_ids, "public manifest")
     _require_unique(summary_ids, "derived summary")
     if set(manifest_ids) != set(summary_ids):
-        raise ValueError("Manifest and summary trial IDs disagree")
+        raise ReportValidationError("Manifest and summary trial IDs disagree")
 
     outcomes = {str(row["trial_id"]): row for row in summary}
     for manifest_row in manifest:
@@ -120,17 +125,25 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             if summary_row.get(field) != manifest_row.get(field)
         ]
         if disagreements:
-            raise ValueError("Manifest and summary assignment fields disagree")
+            raise ReportValidationError(
+                "Manifest and summary assignment fields disagree"
+            )
     execution = study.get("execution") or {}
     run_id = _single_value(manifest, "run_id")
     if execution.get("run_id") != run_id:
-        raise ValueError("Study result and public manifest run IDs disagree")
+        raise ReportValidationError(
+            "Study result and public manifest run IDs disagree"
+        )
     if int(execution.get("trial_count", -1)) != len(manifest):
-        raise ValueError("Study result trial count disagrees with public manifest")
+        raise ReportValidationError(
+            "Study result trial count disagrees with public manifest"
+        )
     if int(audit.get("result_rows", -1)) != len(summary):
-        raise ValueError("Audit result count disagrees with derived summary")
+        raise ReportValidationError("Audit result count disagrees with derived summary")
     if int(audit.get("unique_trial_ids", -1)) != len(set(summary_ids)):
-        raise ValueError("Audit identity count disagrees with derived summary")
+        raise ReportValidationError(
+            "Audit identity count disagrees with derived summary"
+        )
     for summary_row in summary:
         _require_boolean(summary_row, "behavioral_success")
         _require_boolean(summary_row, "harness_failure")
@@ -153,7 +166,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
     placements = sorted({str(row["placement"]) for row in rows})
     orders = sorted(int(row["random_order"]) for row in manifest)
     complete_permutation = orders == list(range(len(manifest)))
-    integrity = _recompute_integrity(audit, rows, summary_ids, backend)
+    integrity = _recompute_integrity(audit, rows, summary, backend)
     is_smoke = (
         len(rows) == 6
         and len(cases) == 1
@@ -244,7 +257,7 @@ def _load_manifest(path: Path, run_dir: Path) -> list[dict[str, Any]]:
         if line.strip()
     ]
     if not rows:
-        raise ValueError("Public manifest is empty")
+        raise ReportValidationError("Public manifest is empty")
     required = {
         "run_id",
         "trial_id",
@@ -261,15 +274,19 @@ def _load_manifest(path: Path, run_dir: Path) -> list[dict[str, Any]]:
     }
     for row in rows:
         if "nonce" in row:
-            raise ValueError("Public manifest unexpectedly contains a raw nonce")
+            raise ReportValidationError(
+                "Public manifest unexpectedly contains a raw nonce"
+            )
         missing = sorted(required - set(row))
         if missing:
-            raise ValueError(f"Public manifest row is missing fields: {missing}")
+            raise ReportValidationError(
+                f"Public manifest row is missing fields: {missing}"
+            )
         for field in PUBLIC_TEXT_FIELDS:
             _validate_public_text(str(row[field]), field)
         _require_boolean(row, "condition_true")
         if row["arm"] not in ARMS:
-            raise ValueError("Unsupported instruction arm")
+            raise ReportValidationError("Unsupported instruction arm")
     return rows
 
 
@@ -280,69 +297,98 @@ def _load_json(path: Path, run_dir: Path) -> Any:
 def _single_value(rows: list[dict[str, Any]], key: str) -> Any:
     values = {json.dumps(row[key], sort_keys=True) for row in rows}
     if len(values) != 1:
-        raise ValueError(f"Public manifest contains multiple {key} values")
+        raise ReportValidationError(
+            f"Public manifest contains multiple {key} values"
+        )
     return json.loads(next(iter(values)))
 
 
 def _require_unique(values: list[str], source: str) -> None:
     if len(values) != len(set(values)):
-        raise ValueError(f"Duplicate trial ID in {source}")
+        raise ReportValidationError(f"Duplicate trial ID in {source}")
 
 
 def _require_boolean(row: dict[str, Any], field: str) -> None:
     if type(row.get(field)) is not bool:
-        raise ValueError(f"{field} must be a boolean")
+        raise ReportValidationError(f"{field} must be a boolean")
 
 
 def _recompute_integrity(
     audit: dict[str, Any],
     rows: list[dict[str, Any]],
-    summary_ids: list[str],
+    summary: list[dict[str, Any]],
     backend: str,
 ) -> dict[str, Any]:
+    summary_ids = [str(row["trial_id"]) for row in summary]
     behavioral_successes = sum(row["success"] for row in rows)
     harness_failures = sum(row["harness_failure"] for row in rows)
     if (
         _audit_int(audit, "behavioral_successes") != behavioral_successes
         or _audit_int(audit, "harness_failures") != harness_failures
     ):
-        raise ValueError("Audit outcome counts disagree with derived summary")
-    scorer_disagreements = _audit_list(audit, "promptfoo_cib_disagreements")
-    identity_disagreements = _audit_list(
-        audit, "archive_identity_disagreements"
-    )
+        raise ReportValidationError(
+            "Audit outcome counts disagree with derived summary"
+        )
     common_passed = (
         _audit_int(audit, "result_rows") == len(rows)
         and _audit_int(audit, "unique_trial_ids") == len(set(summary_ids))
     )
     if backend == "promptfoo-codex-sdk":
+        audited_scorer_disagreements = _audit_list(
+            audit, "promptfoo_cib_disagreements"
+        )
+        identity_disagreements = _audit_list(
+            audit, "archive_identity_disagreements"
+        )
+        for summary_row in summary:
+            _require_boolean(summary_row, "promptfoo_success")
+        session_ids = [row.get("session_id") for row in summary]
+        unique_session_ids = len(
+            {session_id for session_id in session_ids if session_id}
+        )
+        scorer_disagreements = sum(
+            row["promptfoo_success"] != row["behavioral_success"]
+            for row in summary
+        )
+        if _audit_int(audit, "unique_session_ids") != unique_session_ids:
+            raise ReportValidationError(
+                "Audit session count disagrees with derived summary"
+            )
+        if len(audited_scorer_disagreements) != scorer_disagreements:
+            raise ReportValidationError(
+                "Audit scorer disagreements disagree with derived summary"
+            )
         backend_passed = all(
             (
                 _audit_int(audit, "duplicate_trial_ids") == 0,
                 _audit_int(audit, "protected_raw_files") == len(rows),
                 _audit_int(audit, "protected_source_rows") == len(rows),
-                _audit_int(audit, "unique_session_ids") == len(rows),
+                unique_session_ids == len(rows),
                 not _audit_list(audit, "missing_protected_raw"),
                 not _audit_list(audit, "unexpected_protected_raw"),
-                not scorer_disagreements,
+                scorer_disagreements == 0,
                 not identity_disagreements,
             )
         )
     elif backend == "direct-codex":
+        scorer_disagreements = 0
+        identity_disagreements = []
         backend_passed = _audit_int(audit, "raw_files") == len(rows)
     else:
-        raise ValueError("Unsupported report backend")
+        raise ReportValidationError("Unsupported report backend")
     recomputed_passed = common_passed and backend_passed
     _require_boolean(audit, "passed")
     if audit["passed"] is not recomputed_passed:
-        raise ValueError("Audit passed status disagrees with recomputed integrity")
+        raise ReportValidationError(
+            "Audit passed status disagrees with recomputed integrity"
+        )
     return {
         "passed": recomputed_passed,
         "result_rows": len(rows),
         "unique_trial_ids": len(set(summary_ids)),
         "behavioral_successes": behavioral_successes,
         "harness_failures": harness_failures,
-        "scorer_disagreements": len(scorer_disagreements),
+        "scorer_disagreements": scorer_disagreements,
         "identity_disagreements": len(identity_disagreements),
     }
 
@@ -350,14 +396,14 @@ def _recompute_integrity(
 def _audit_int(audit: dict[str, Any], field: str) -> int:
     value = audit.get(field)
     if type(value) is not int:
-        raise ValueError(f"Audit field {field} must be an integer")
+        raise ReportValidationError(f"Audit field {field} must be an integer")
     return value
 
 
 def _audit_list(audit: dict[str, Any], field: str) -> list[Any]:
-    value = audit.get(field, [])
+    value = audit.get(field)
     if not isinstance(value, list):
-        raise ValueError(f"Audit field {field} must be a list")
+        raise ReportValidationError(f"Audit field {field} must be a list")
     return value
 
 
@@ -606,25 +652,33 @@ def _read_source(path: Path, run_dir: Path) -> str:
     try:
         return validated.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
-        raise ValueError("Canonical report input must be UTF-8 text") from error
+        raise ReportValidationError(
+            "Canonical report input must be UTF-8 text"
+        ) from error
 
 
 def _validated_source(path: Path, run_dir: Path) -> Path:
     try:
         relative = path.relative_to(run_dir)
     except ValueError as error:
-        raise ValueError("Canonical report input is outside the study directory") from error
+        raise ReportValidationError(
+            "Canonical report input is outside the study directory"
+        ) from error
     cursor = run_dir
     for part in relative.parts:
         cursor = cursor / part
         if cursor.is_symlink():
-            raise ValueError("Canonical report input must not be a symlink")
+            raise ReportValidationError(
+                "Canonical report input must not be a symlink"
+            )
     if not path.is_file():
-        raise ValueError("Canonical report input is missing")
+        raise ReportValidationError("Canonical report input is missing")
     try:
         path.resolve(strict=True).relative_to(run_dir)
     except (FileNotFoundError, ValueError) as error:
-        raise ValueError("Canonical report input is outside the study directory") from error
+        raise ReportValidationError(
+            "Canonical report input is outside the study directory"
+        ) from error
     return path
 
 
@@ -648,7 +702,9 @@ def _validate_public_text(value: str, field: str) -> None:
         or ABSOLUTE_PATH_FRAGMENT.search(value)
         or UNSAFE_PUBLIC_TEXT.search(value)
     ):
-        raise ValueError(f"Unsafe text in public manifest field {field}")
+        raise ReportValidationError(
+            f"Unsafe text in public manifest field {field}"
+        )
 
 
 def _percent(value: float | None) -> str:

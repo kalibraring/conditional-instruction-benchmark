@@ -15,7 +15,7 @@ from .trials import TrialSpec
 from .capabilities import CAPABILITIES
 from .doctor import inspect_environment
 from .manifest import build_manifest, write_manifest
-from .reporting import write_report
+from .reporting import ReportValidationError, write_report
 from .workflow import run_direct_study, run_promptfoo_study
 
 
@@ -79,11 +79,11 @@ def _plan(args: argparse.Namespace) -> int:
 def _report(args: argparse.Namespace) -> int:
     try:
         result = write_report(args.run_dir, args.output_dir)
-    except (FileExistsError, ValueError) as error:
+    except (FileExistsError, ReportValidationError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except Exception:
-        print("error: report generation failed", file=sys.stderr)
+        print("error: report validation failed", file=sys.stderr)
         return 2
     print(json.dumps(result, indent=2))
     return 0
