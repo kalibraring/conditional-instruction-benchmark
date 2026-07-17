@@ -109,6 +109,44 @@ def test_v2_check_requires_explicit_trial_and_study_timeouts(tmp_path: Path) -> 
     assert parsed.legacy_warning is None
 
 
+def test_check_forwards_explicit_private_cache_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "cib.yaml"
+    _write_passing_config(config_path)
+    auth = tmp_path / "auth.json"
+    auth.write_text("{}", encoding="utf-8")
+    seed = tmp_path / "seed.json"
+    seed.write_text("{}", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    class Forwarded(Exception):
+        pass
+
+    def capture(**kwargs):
+        captured.update(kwargs)
+        raise Forwarded
+
+    monkeypatch.setattr(
+        "cib.checks.inspect_environment",
+        lambda *args, **kwargs: {"ready": True, "checks": {}},
+    )
+    monkeypatch.setattr("cib.checks.run_direct_study", capture)
+
+    with pytest.raises(Forwarded):
+        run_check(
+            config=load_check_config(config_path),
+            output_dir=tmp_path / "output",
+            auth_path=auth,
+            project_root=tmp_path,
+            cloud_config_seed_path=seed,
+            cloud_config_min_remaining_seconds=3300,
+        )
+
+    assert captured["cloud_config_seed_path"] == seed
+    assert captured["cloud_config_min_remaining_seconds"] == 3300
+
+
 def test_doctor_with_config_reports_resolved_timeout_contract(tmp_path: Path) -> None:
     config = tmp_path / "cib.yaml"
     auth = tmp_path / "auth.json"

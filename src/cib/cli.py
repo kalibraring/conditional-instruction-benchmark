@@ -116,6 +116,19 @@ def _report(args: argparse.Namespace) -> int:
 
 
 def _check(args: argparse.Namespace) -> int:
+    if args.cloud_config_min_validity_seconds is not None:
+        if args.cloud_config_min_validity_seconds < 0:
+            print(
+                "error: --cloud-config-min-validity-seconds cannot be negative",
+                file=sys.stderr,
+            )
+            return 2
+        if args.cloud_config_seed is None:
+            print(
+                "error: --cloud-config-min-validity-seconds requires --cloud-config-seed",
+                file=sys.stderr,
+            )
+            return 2
     try:
         config = load_check_config(args.config)
         if config.legacy_warning:
@@ -126,6 +139,10 @@ def _check(args: argparse.Namespace) -> int:
             output_dir=output_dir,
             auth_path=args.auth,
             project_root=Path.cwd(),
+            cloud_config_seed_path=args.cloud_config_seed,
+            cloud_config_min_remaining_seconds=(
+                args.cloud_config_min_validity_seconds
+            ),
         )
     except CheckConfigError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -581,6 +598,12 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument(
         "--auth", type=Path, default=Path.home() / ".codex" / "auth.json"
     )
+    check.add_argument(
+        "--cloud-config-seed",
+        type=Path,
+        help="Private signed-format Codex cloud-config cache snapshot to copy per trial",
+    )
+    check.add_argument("--cloud-config-min-validity-seconds", type=int)
     check.set_defaults(func=_check)
     report = subparsers.add_parser(
         "report",

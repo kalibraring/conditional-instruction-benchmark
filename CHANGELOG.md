@@ -11,6 +11,13 @@ compatibility boundary.
 - Separate recovery-run command and development profile.
 - First non-Codex adapter capability spike.
 
+## [0.5.3] - 2026-07-18
+
+### Added
+
+- Expose the explicit private cloud-config seed and minimum-validity controls on
+  `cib check`, matching the scientific `cib study` execution boundary.
+
 ## [0.5.2] - 2026-07-18
 
 ### Added
@@ -121,7 +128,8 @@ compatibility boundary.
 - Passed exact assignment and fixture parity against a frozen direct-Codex
   shadow run.
 
-[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/kalibraring/conditional-instruction-benchmark/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.3
 [0.5.2]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.2
 [0.5.1]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kalibraring/conditional-instruction-benchmark/releases/tag/v0.5.0

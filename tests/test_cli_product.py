@@ -17,7 +17,7 @@ def test_cli_prints_installed_version() -> None:
         text=True,
     )
 
-    assert completed.stdout.strip() == "cib 0.5.2"
+    assert completed.stdout.strip() == "cib 0.5.3"
 
 
 def _write_completed_study(run_dir: Path) -> str:
@@ -251,7 +251,7 @@ def test_report_command_writes_safe_self_contained_reports(tmp_path: Path) -> No
     }
     report = json.loads((report_dir / "report.json").read_text())
     assert report["schema_version"] == "cib-report/1"
-    assert report["provenance"]["generator_version"] == "0.5.2"
+    assert report["provenance"]["generator_version"] == "0.5.3"
     assert report["claim"]["status"] == "exploratory_smoke"
     assert report["run"]["cases"] == [
         {"case_id": "literal_flag", "variants": [0]}

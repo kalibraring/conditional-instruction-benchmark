@@ -244,6 +244,8 @@ def run_check(
     output_dir: Path,
     auth_path: Path,
     project_root: Path,
+    cloud_config_seed_path: Path | None = None,
+    cloud_config_min_remaining_seconds: int | None = None,
 ) -> dict[str, Any]:
     if output_dir.exists():
         raise CheckConfigError("Refusing to reuse check output directory")
@@ -272,6 +274,8 @@ def run_check(
         "auth_path": auth_path,
         "model": config.model,
         "reasoning_effort": config.reasoning_effort,
+        "cloud_config_seed_path": cloud_config_seed_path,
+        "cloud_config_min_remaining_seconds": cloud_config_min_remaining_seconds,
     }
     if config.backend == "promptfoo-codex-sdk":
         run_promptfoo_study(
