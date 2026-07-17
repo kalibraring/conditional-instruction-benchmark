@@ -1,6 +1,6 @@
 {
   "name": "conditional-instruction-benchmark",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "packageManager": "npm@11.11.1",
   "description": "Pinned JavaScript runtime for the Conditional Instruction Benchmark Promptfoo backend.",

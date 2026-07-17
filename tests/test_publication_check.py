@@ -19,3 +19,16 @@ def test_publication_check_accepts_relative_public_source(tmp_path: Path) -> Non
         "Run `uv run cib doctor` from the repository root.\n", encoding="utf-8"
     )
     assert scan(tmp_path) == []
+
+
+def test_publication_check_rejects_private_check_config(tmp_path: Path) -> None:
+    (tmp_path / "check-config.private.yaml").write_text(
+        "cases: user-owned prompts\n", encoding="utf-8"
+    )
+
+    assert scan(tmp_path) == [
+        {
+            "path": "check-config.private.yaml",
+            "reason": "forbidden file type",
+        }
+    ]

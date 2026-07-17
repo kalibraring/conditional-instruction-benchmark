@@ -1,0 +1,23 @@
+schema_version: cib-check/1
+name: openai-docs-routing
+instruction:
+  condition: the user asks how to build with or configure an OpenAI product
+  placement: skill_description
+  policy: strict
+cases:
+  required:
+    - "The user asks: How does implicit Codex skill activation work?"
+  unnecessary:
+    - "The user asks: Write a Python function that sorts integers."
+execution:
+  backend: promptfoo-codex-sdk
+  model: gpt-5.6-sol
+  reasoning_effort: medium
+  repetitions: 1
+  jobs: 2
+  seed: 20260717
+  timeout_seconds: 300
+thresholds:
+  minimum_required_use_rate: 1.0
+  minimum_avoided_unnecessary_use_rate: 1.0
+  maximum_harness_failure_rate: 0.0

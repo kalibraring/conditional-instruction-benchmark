@@ -1,0 +1,23 @@
+schema_version: cib-check/1
+name: hosted-action-smoke
+instruction:
+  condition: the request contains ACTION_REQUIRED
+  placement: skill_description
+  policy: strict
+cases:
+  required:
+    - The request contains ACTION_REQUIRED.
+  unnecessary:
+    - The request contains ACTION_UNNECESSARY.
+execution:
+  backend: direct-codex
+  model: fixture-model
+  reasoning_effort: medium
+  repetitions: 1
+  jobs: 2
+  seed: 17
+  timeout_seconds: 30
+thresholds:
+  minimum_required_use_rate: 1.0
+  minimum_avoided_unnecessary_use_rate: 1.0
+  maximum_harness_failure_rate: 0.0

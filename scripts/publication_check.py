@@ -18,7 +18,13 @@ IGNORED_PARTS = {
     "plans",
     "results",
 }
-FORBIDDEN_SUFFIXES = (".private.jsonl", ".pem", ".p12", ".pfx")
+FORBIDDEN_SUFFIXES = (
+    ".private.jsonl",
+    ".private.yaml",
+    ".pem",
+    ".p12",
+    ".pfx",
+)
 MAX_FILE_BYTES = 5 * 1024 * 1024
 SELF = Path("scripts/publication_check.py")
 PATTERNS = {

@@ -12,6 +12,7 @@ from typing import Any
 
 from . import __version__
 from .analysis import CONTRASTS, task_weighted_difference, wilson_interval
+from .product_decision import POLICY_ARMS, build_product_decision
 
 
 REPORT_SCHEMA_VERSION = "cib-report/1"
@@ -199,7 +200,7 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             "and missingness policy."
         ),
     }
-    return {
+    report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run": {
             "run_id": run_id,
@@ -252,6 +253,63 @@ def build_report(run_dir: Path) -> dict[str, Any]:
             ),
         },
     }
+    check_path = run_dir / "check-metadata.json"
+    if check_path.exists():
+        metadata = _load_check_metadata(check_path, run_dir)
+        report["provenance"]["sources"]["check-metadata.json"] = _sha256(
+            check_path, run_dir
+        )
+        report["decision"] = build_product_decision(report, metadata)
+    return report
+
+
+def _load_check_metadata(path: Path, run_dir: Path) -> dict[str, Any]:
+    metadata = _load_json(path, run_dir)
+    if not isinstance(metadata, dict):
+        raise ReportValidationError("Check metadata has an invalid shape")
+    expected = {
+        "schema_version",
+        "name",
+        "policy",
+        "selected_arm",
+        "placement",
+        "matched_case_pairs",
+        "repetitions",
+        "config_sha256",
+        "thresholds",
+    }
+    if set(metadata) != expected:
+        raise ReportValidationError("Check metadata fields are incomplete or unknown")
+    if metadata["schema_version"] != "cib-check-metadata/1":
+        raise ReportValidationError("Unsupported check metadata schema")
+    for field in (
+        "name",
+        "policy",
+        "selected_arm",
+        "placement",
+        "config_sha256",
+    ):
+        if not isinstance(metadata[field], str):
+            raise ReportValidationError("Check metadata text field is invalid")
+        _validate_public_text(metadata[field], field)
+    if metadata["policy"] not in POLICY_ARMS:
+        raise ReportValidationError("Check metadata policy is invalid")
+    if metadata["selected_arm"] != POLICY_ARMS[metadata["policy"]]:
+        raise ReportValidationError("Check metadata policy and arm disagree")
+    thresholds = metadata["thresholds"]
+    if not isinstance(thresholds, dict) or set(thresholds) != {
+        "minimum_required_use_rate",
+        "minimum_avoided_unnecessary_use_rate",
+        "maximum_harness_failure_rate",
+    }:
+        raise ReportValidationError("Check metadata thresholds are invalid")
+    for value in thresholds.values():
+        if type(value) not in (int, float) or not 0 <= float(value) <= 1:
+            raise ReportValidationError("Check metadata threshold is invalid")
+    for field in ("matched_case_pairs", "repetitions"):
+        if type(metadata[field]) is not int or metadata[field] < 1:
+            raise ReportValidationError("Check metadata count is invalid")
+    return metadata
 
 
 def _load_manifest(path: Path, run_dir: Path) -> list[dict[str, Any]]:
@@ -500,7 +558,36 @@ def _contrasts(
 def render_markdown(report: dict[str, Any]) -> str:
     run = report["run"]
     integrity = report["integrity"]
-    lines = [
+    lines: list[str] = []
+    decision = report.get("decision")
+    if isinstance(decision, dict):
+        lines.extend(
+            [
+                f"# {str(decision['verdict']).upper()}",
+                "",
+                decision["headline"],
+                "",
+                f"**Required use:** {_percent(decision['required_use']['rate'])} "
+                f"(minimum {_percent(decision['required_use']['threshold'])})  ",
+                "**Avoided unnecessary use:** "
+                f"{_percent(decision['avoided_unnecessary_use']['rate'])} "
+                "(minimum "
+                f"{_percent(decision['avoided_unnecessary_use']['threshold'])})  ",
+                f"**Harness failures:** {_percent(decision['harness_failures']['rate'])} "
+                f"(maximum {_percent(decision['harness_failures']['threshold'])})  ",
+                "**Evidence strength:** "
+                f"{str(decision['evidence_strength']).replace('_', ' ')}",
+                "",
+                "Passing configured thresholds is not a general causal claim or a "
+                "guarantee of future model behavior.",
+                "",
+                "<details>",
+                "<summary>Method and evidence</summary>",
+                "",
+            ]
+        )
+    lines.extend(
+        [
         "# Conditional Instruction Benchmark report",
         "",
         f"Run: `{run['run_id']}`  ",
@@ -530,7 +617,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "| Placement | Estimand | Arm | Success | Rate | 95% Wilson interval | Harness failures |",
         "|---|---|---|---:|---:|---:|---:|",
-    ]
+        ]
+    )
     for cell in report["cells"]:
         lines.append(
             f"| `{cell['placement']}` | {_label(cell['estimand'])} | `{cell['arm']}` | "
@@ -565,6 +653,8 @@ def render_markdown(report: dict[str, Any]) -> str:
     for source, digest in report["provenance"]["sources"].items():
         lines.append(f"- `{source}`: `{digest}`")
     lines.extend(["", report["provenance"]["privacy_boundary"], ""])
+    if isinstance(decision, dict):
+        lines.extend(["</details>", ""])
     return "\n".join(lines)
 
 
@@ -602,6 +692,28 @@ def render_html(report: dict[str, Any]) -> str:
     run = report["run"]
     integrity = report["integrity"]
     integrity_class = "pass" if integrity["passed"] else "fail"
+    decision = report.get("decision")
+    decision_html = ""
+    method_open = ""
+    method_close = ""
+    if isinstance(decision, dict):
+        verdict = str(decision["verdict"]).upper()
+        verdict_class = "pass" if decision["verdict"] == "pass" else "fail"
+        decision_html = f"""
+<section class="decision">
+<h1>{html.escape(verdict)}</h1>
+<p class="headline {verdict_class}">{html.escape(str(decision['headline']))}</p>
+<div class="decision-grid">
+<p><strong>Required use</strong><br>{_percent(decision['required_use']['rate'])}<br><small>minimum {_percent(decision['required_use']['threshold'])}</small></p>
+<p><strong>Avoided unnecessary use</strong><br>{_percent(decision['avoided_unnecessary_use']['rate'])}<br><small>minimum {_percent(decision['avoided_unnecessary_use']['threshold'])}</small></p>
+<p><strong>Harness failures</strong><br>{_percent(decision['harness_failures']['rate'])}<br><small>maximum {_percent(decision['harness_failures']['threshold'])}</small></p>
+</div>
+<p><strong>Evidence strength:</strong> {html.escape(str(decision['evidence_strength']).replace('_', ' '))}</p>
+<p>Passing configured thresholds is not a general causal claim or a guarantee of future model behavior.</p>
+</section>
+"""
+        method_open = '<details class="method"><summary>Method and evidence</summary>'
+        method_close = "</details>"
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -618,10 +730,17 @@ th, td {{ border-bottom: 1px solid #8886; padding: .55rem; text-align: left; }}
 code {{ overflow-wrap: anywhere; }}
 .pass {{ color: #16803a; font-weight: 700; }}
 .fail {{ color: #c62828; font-weight: 700; }}
+.decision {{ padding: 1.25rem; border: 2px solid #8888; border-radius: .8rem; margin-bottom: 2rem; }}
+.decision-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; }}
+.decision-grid p {{ padding: 1rem; background: #8881; border-radius: .5rem; }}
+.headline {{ font-size: 1.2rem; }}
+.method > summary {{ cursor: pointer; font-size: 1.25rem; font-weight: 700; margin: 1rem 0; }}
 </style>
 </head>
 <body>
 <main>
+{decision_html}
+{method_open}
 <h1>Conditional Instruction Benchmark report</h1>
 <div class="meta"><strong>Run:</strong> <code>{html.escape(str(run['run_id']))}</code><br>
 <strong>Protocol:</strong> <code>{html.escape(str(run['protocol_version']))}</code> · <strong>Profile:</strong> <code>{html.escape(str(run['profile']))}</code><br>
@@ -647,6 +766,7 @@ Scorer disagreements: {integrity['scorer_disagreements']} · Identity disagreeme
 <h2>Reproducibility</h2>
 <ul>{sources}</ul>
 <p>{html.escape(report['provenance']['privacy_boundary'])}</p>
+{method_close}
 </main>
 </body>
 </html>

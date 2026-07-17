@@ -13,6 +13,13 @@ from .analysis import analyze, rebuild_summary
 from .tasks import CASES, case_ids, case_ids_for_layer
 from .trials import TrialSpec
 from .capabilities import CAPABILITIES
+from .checks import (
+    CheckConfigError,
+    default_check_output,
+    load_check_config,
+    render_check_console,
+    run_check,
+)
 from .doctor import inspect_environment
 from .manifest import build_manifest, write_manifest
 from .reporting import ReportValidationError, write_report
@@ -87,6 +94,26 @@ def _report(args: argparse.Namespace) -> int:
         return 2
     print(json.dumps(result, indent=2))
     return 0
+
+
+def _check(args: argparse.Namespace) -> int:
+    try:
+        config = load_check_config(args.config)
+        output_dir = args.output_dir or default_check_output(config)
+        result = run_check(
+            config=config,
+            output_dir=output_dir,
+            auth_path=args.auth,
+            project_root=Path.cwd(),
+        )
+    except CheckConfigError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except Exception:
+        print("error: check execution failed", file=sys.stderr)
+        return 2
+    print(render_check_console(result))
+    return int(result["exit_code"])
 
 
 def _study(args: argparse.Namespace) -> int:
@@ -425,6 +452,16 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--reasoning-effort", default="high")
     plan.add_argument("--output-dir", type=Path, required=True)
     plan.set_defaults(func=_plan)
+    check = subparsers.add_parser(
+        "check",
+        help="Run one configured routing check and produce a CI decision",
+    )
+    check.add_argument("config", type=Path)
+    check.add_argument("--output-dir", type=Path)
+    check.add_argument(
+        "--auth", type=Path, default=Path.home() / ".codex" / "auth.json"
+    )
+    check.set_defaults(func=_check)
     report = subparsers.add_parser(
         "report",
         help="Create safe Markdown, HTML, and JSON reports from a completed study",

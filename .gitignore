@@ -17,3 +17,4 @@ plans/
 .promptfoo/
 promptfoo-output/
 *.private.jsonl
+*.private.yaml

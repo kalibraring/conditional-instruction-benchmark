@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import re
+import sys
+
+
+if "--version" in sys.argv:
+    print("codex-cli 0.144.5")
+    raise SystemExit(0)
+
+if "login" in sys.argv and "--with-api-key" in sys.argv:
+    if not sys.stdin.read().strip():
+        raise SystemExit("API key missing")
+    codex_home = pathlib.Path(os.environ["CODEX_HOME"])
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text("{}", encoding="utf-8")
+    raise SystemExit(0)
+
+prompt = sys.argv[-1]
+probe = (
+    pathlib.Path.cwd()
+    / ".agents"
+    / "skills"
+    / "canary-resource"
+    / "probe.py"
+)
+match = re.search(r"CANARY:([0-9a-f]+)", probe.read_text(encoding="utf-8"))
+if match is None:
+    raise SystemExit("canary missing")
+nonce = match.group(1)
+required = "ACTION_REQUIRED" in prompt and "ACTION_UNNECESSARY" not in prompt
+if required:
+    print(
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": (
+                        "python3 .agents/skills/canary-resource/probe.py"
+                    ),
+                    "aggregated_output": f"CANARY:{nonce}\n",
+                    "exit_code": 0,
+                    "status": "completed",
+                },
+            }
+        )
+    )
+print(
+    json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "agent_message",
+                "text": json.dumps(
+                    {
+                        "answer": "complete",
+                        "resource_nonce": nonce if required else None,
+                    }
+                ),
+            },
+        }
+    )
+)
+print(json.dumps({"type": "turn.completed", "usage": {"total_tokens": 10}}))

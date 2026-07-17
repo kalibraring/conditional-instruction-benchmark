@@ -1,0 +1,413 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+
+def _write_fake_codex(bin_dir: Path) -> None:
+    executable = bin_dir / "codex"
+    executable.parent.mkdir(parents=True)
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import pathlib
+import re
+import sys
+
+if "--version" in sys.argv:
+    print("codex-cli 1.0.0")
+    raise SystemExit(0)
+
+pathlib.Path(sys.argv[0]).with_name("model-called").write_text("yes")
+prompt = sys.argv[-1]
+fixture = pathlib.Path.cwd()
+probe = fixture / ".agents" / "skills" / "canary-resource" / "probe.py"
+nonce = re.search(r"CANARY:([0-9a-f]+)", probe.read_text()).group(1)
+required = (
+    "never" not in pathlib.Path(sys.argv[0]).parent.name
+    and "SHOULD_USE" in prompt
+    and "SHOULD_NOT_USE" not in prompt
+)
+if required:
+    print(json.dumps({
+        "type": "item.completed",
+        "item": {
+            "type": "command_execution",
+            "command": "python3 .agents/skills/canary-resource/probe.py",
+            "aggregated_output": f"CANARY:{nonce}\\n",
+            "exit_code": 0,
+            "status": "completed",
+        },
+    }))
+print(json.dumps({
+    "type": "item.completed",
+    "item": {
+        "type": "agent_message",
+        "text": json.dumps({
+            "answer": "complete",
+            "resource_nonce": nonce if required else None,
+        }),
+    },
+}))
+print(json.dumps({"type": "turn.completed", "usage": {"total_tokens": 10}}))
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+
+def _write_passing_config(path: Path) -> None:
+    path.write_text(
+        """schema_version: cib-check/1
+name: deploy-routing
+instruction:
+  condition: the request contains SHOULD_USE
+  placement: skill_description
+  policy: strict
+cases:
+  required:
+    - The request contains SHOULD_USE.
+  unnecessary:
+    - The request contains SHOULD_NOT_USE.
+execution:
+  backend: direct-codex
+  model: test-model
+  reasoning_effort: medium
+  repetitions: 1
+  jobs: 2
+  seed: 17
+  timeout_seconds: 30
+thresholds:
+  minimum_required_use_rate: 1.0
+  minimum_avoided_unnecessary_use_rate: 1.0
+  maximum_harness_failure_rate: 0.0
+""",
+        encoding="utf-8",
+    )
+
+
+def test_check_runs_one_user_config_and_writes_one_plain_english_decision(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "bin"
+    _write_passing_config(config)
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.startswith("PASS — ")
+    assert "Required use: 100.0% (minimum 100.0%)" in completed.stdout
+    assert "Avoided unnecessary use: 100.0% (minimum 100.0%)" in completed.stdout
+    assert str(tmp_path) not in completed.stdout + completed.stderr
+    result = json.loads((output / "check-result.json").read_text())
+    assert result == {
+        "schema_version": "cib-check-result/1",
+        "name": "deploy-routing",
+        "verdict": "pass",
+        "exit_code": 0,
+        "headline": "The instruction met both routing thresholds.",
+        "required_use": {"rate": 1.0, "threshold": 1.0, "passed": True},
+        "avoided_unnecessary_use": {
+            "rate": 1.0,
+            "threshold": 1.0,
+            "passed": True,
+        },
+        "harness_failures": {"rate": 0.0, "threshold": 0.0, "passed": True},
+        "integrity_passed": True,
+        "evidence_strength": "smoke_only",
+        "report_json": "report/report.json",
+        "report_markdown": "report/report.md",
+        "report_html": "report/report.html",
+    }
+    report = json.loads((output / "report" / "report.json").read_text())
+    assert report["decision"] == {
+        key: result[key]
+        for key in (
+            "name",
+            "verdict",
+            "headline",
+            "required_use",
+            "avoided_unnecessary_use",
+            "harness_failures",
+            "integrity_passed",
+            "evidence_strength",
+        )
+    }
+    markdown = (output / "report" / "report.md").read_text()
+    html = (output / "report" / "report.html").read_text()
+    assert markdown.index("# PASS") < markdown.index("<summary>Method and evidence</summary>")
+    assert "The instruction met both routing thresholds." in markdown
+    assert html.index("<h1>PASS</h1>") < html.index(
+        "<summary>Method and evidence</summary>"
+    )
+    assert "The instruction met both routing thresholds." in html
+    public_output = (
+        completed.stdout
+        + completed.stderr
+        + json.dumps(result)
+        + json.dumps(report)
+        + markdown
+        + html
+    )
+    assert "SHOULD_USE" not in public_output
+    assert "SHOULD_NOT_USE" not in public_output
+    private_config = (output / "check-config.private.yaml").read_text()
+    assert "SHOULD_USE" in private_config
+
+
+def test_check_returns_one_when_valid_evidence_fails_a_threshold(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "never-bin"
+    _write_passing_config(config)
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 1, completed.stderr
+    assert completed.stdout.startswith("FAIL — ")
+    assert "The required action did not happen often enough." in completed.stdout
+    result = json.loads((output / "check-result.json").read_text())
+    assert result["verdict"] == "fail"
+    assert result["exit_code"] == 1
+    assert result["integrity_passed"] is True
+    assert result["required_use"] == {
+        "rate": 0.0,
+        "threshold": 1.0,
+        "passed": False,
+    }
+    assert (output / "report" / "report.html").is_file()
+
+
+def test_check_rejects_unknown_config_before_model_calls_without_echoing_values(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "bin"
+    _write_passing_config(config)
+    sensitive_value = "/" + "Users/example/private-check"
+    config.write_text(
+        config.read_text() + f"unexpected_field: {sensitive_value}\n",
+        encoding="utf-8",
+    )
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Configuration fields are incomplete or unknown" in completed.stderr
+    assert sensitive_value not in completed.stdout + completed.stderr
+    assert not (bin_dir / "model-called").exists()
+    assert not output.exists()
+
+
+def test_check_refuses_output_reuse_before_model_calls(tmp_path: Path) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "bin"
+    _write_passing_config(config)
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    output.mkdir()
+    sentinel = output / "keep.txt"
+    sentinel.write_text("user-owned", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 2
+    assert "Refusing to reuse check output directory" in completed.stderr
+    assert sentinel.read_text() == "user-owned"
+    assert not (bin_dir / "model-called").exists()
+
+
+def test_check_materializes_every_pair_and_repetition_for_all_policies(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "cib.yaml"
+    output = tmp_path / "check-output"
+    auth = tmp_path / "auth.json"
+    bin_dir = tmp_path / "bin"
+    _write_passing_config(config)
+    parsed = yaml.safe_load(config.read_text())
+    parsed["cases"] = {
+        "required": ["First SHOULD_USE case.", "Second SHOULD_USE case."],
+        "unnecessary": [
+            "First SHOULD_NOT_USE case.",
+            "Second SHOULD_NOT_USE case.",
+        ],
+    }
+    parsed["execution"]["repetitions"] = 2
+    parsed["execution"]["jobs"] = 4
+    config.write_text(yaml.safe_dump(parsed, sort_keys=False), encoding="utf-8")
+    _write_fake_codex(bin_dir)
+    auth.write_text("{}", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env['PATH']}"
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cib.cli",
+            "check",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--auth",
+            str(auth),
+        ],
+        cwd=Path(__file__).parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    rows = [
+        json.loads(line)
+        for line in (output / "run-manifest.private.jsonl").read_text().splitlines()
+    ]
+    assert len(rows) == 24
+    assert {row["arm"] for row in rows} == {"if", "iff", "if_else_not"}
+    assert {row["condition_true"] for row in rows} == {True, False}
+    assert {row["case_variant"] for row in rows} == {0, 1, 2, 3}
+    report = json.loads((output / "report" / "report.json").read_text())
+    assert {cell["n"] for cell in report["cells"]} == {4}
+
+
+def test_composite_action_runs_check_and_uploads_only_public_artifacts() -> None:
+    root = Path(__file__).parents[1]
+    action = yaml.safe_load((root / "action.yml").read_text())
+
+    assert action["runs"]["using"] == "composite"
+    assert set(action["inputs"]) == {
+        "config",
+        "openai-api-key",
+        "artifact-name",
+        "retention-days",
+    }
+    assert set(action["outputs"]) == {"verdict", "exit-code", "report-artifact"}
+    steps = action["runs"]["steps"]
+    pinned_uses = [step["uses"] for step in steps if "uses" in step]
+    assert pinned_uses
+    assert all("@" in value and len(value.rsplit("@", 1)[1]) == 40 for value in pinned_uses)
+    serialized = (root / "action.yml").read_text()
+    assert "codex-auth-json" not in serialized
+    assert "codex login --with-api-key" in serialized
+    assert "uv sync --frozen --no-dev" in serialized
+    assert "@openai/codex@0.144.5" in serialized
+    check_step = next(step for step in steps if step.get("id") == "check")
+    assert "cib check" in check_step["run"]
+    upload = next(
+        step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")
+    )
+    uploaded_paths = upload["with"]["path"]
+    assert "check-result.json" in uploaded_paths
+    assert "/report" in uploaded_paths
+    assert "/promptfoo" not in uploaded_paths
+    assert "/direct" not in uploaded_paths
+    assert "private" not in uploaded_paths
+    final_gate = steps[-1]
+    assert final_gate["if"] == "always()"
+    assert 'exit "${{ steps.check.outputs.exit-code }}"' in final_gate["run"]
+
+
+def test_hosted_ci_exercises_the_local_composite_action_without_model_quota() -> None:
+    root = Path(__file__).parents[1]
+    workflow = (root / ".github" / "workflows" / "action-smoke.yml").read_text()
+
+    assert "uses: ./" in workflow
+    assert "tests/fixtures/action/cib.yaml" in workflow
+    assert "tests/fixtures/action/fake-codex" in workflow
+    assert 'openai-api-key: "fixture-api-key"' in workflow
+    assert 'steps.cib.outputs.verdict == \'pass\'' in workflow
