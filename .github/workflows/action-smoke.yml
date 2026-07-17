@@ -25,11 +25,13 @@ jobs:
       - name: Install fake npm boundary
         run: |
           npm_path="$(command -v npm)"
-          real_npm="${npm_path}.cib-real"
-          mv "${npm_path}" "${real_npm}"
+          test_npm_root="${RUNNER_TEMP}/cib-test-npm"
+          "${npm_path}" install --global --prefix "${test_npm_root}" \
+            npm@11.11.1
+          mv "${npm_path}" "${npm_path}.cib-original"
           install -m 0755 tests/fixtures/action/fake-npm \
             "${npm_path}"
-          echo "CIB_REAL_NPM=${real_npm}" >> "${GITHUB_ENV}"
+          echo "CIB_REAL_NPM=${test_npm_root}/bin/npm" >> "${GITHUB_ENV}"
 
       - name: Run local CIB action
         id: cib

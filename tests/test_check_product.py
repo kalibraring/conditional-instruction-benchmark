@@ -530,7 +530,8 @@ def test_hosted_ci_exercises_the_local_composite_action_without_model_quota() ->
     assert "tests/fixtures/action/cib.yaml" in workflow
     assert "tests/fixtures/action/fake-npm" in workflow
     assert "npm_path=\"$(command -v npm)\"" in workflow
-    assert 'mv "${npm_path}" "${real_npm}"' in workflow
+    assert 'npm@11.11.1' in workflow
+    assert 'mv "${npm_path}" "${npm_path}.cib-original"' in workflow
     assert 'openai-api-key: "fixture-api-key"' in workflow
     assert 'steps.cib.outputs.verdict == \'pass\'' in workflow
     assert "steps.cib.outputs.report-path" in workflow
