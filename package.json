@@ -13,7 +13,7 @@
     "node": ">=22.22.0"
   },
   "dependencies": {
-    "@openai/codex-sdk": "0.144.5",
+    "@openai/codex-sdk": "0.146.0",
     "promptfoo": "0.121.19"
   },
   "scripts": {
